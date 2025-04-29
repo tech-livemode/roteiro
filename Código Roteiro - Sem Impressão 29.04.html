@@ -1,0 +1,3118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BroadcastPro: TV Script & Live Control Suite</title>
+    <meta name="description" content="Professional TV broadcasting tool for script creation and live transmission management with dynamic timing controls and real-time show rundown">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/airtable@0.11.6/build/airtable.browser.js"></script>
+    <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        /* Custom styles for the type dropdown */
+        .custom-type-select .dropdown-menu {
+            position: absolute;
+            z-index: 50;
+            width: 100%;
+            max-height: 200px;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        
+        /* Drag and drop styles */
+        tr.dragging {
+            opacity: 0.5;
+            cursor: move;
+        }
+        
+        tr.drop-target {
+            border-top: 2px dashed #4299e1;
+        }
+        
+        tr:has(input[type="checkbox"]:checked) {
+            cursor: grab;
+        }
+        
+        tr:has(input[type="checkbox"]:checked):active {
+            cursor: grabbing;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="bg-gray-800 text-white p-4 rounded-lg mb-6 flex items-center">
+            <div class="mr-4">
+                <img src="https://upload.wikimedia.org/wikipedia/pt/2/22/Logotipo_da_Caz%C3%A9TV.png" 
+                     alt="CazéTV Logo" class="h-10">
+            </div>
+            <div>
+                <h1 class="text-3xl md:text-4xl font-bold text-white mb-2">LiveScript</h1>
+                <p class="text-gray-300">TV Script & Controle de Broadcast</p>
+            </div>
+            <div class="ml-auto">
+                <div class="bg-gray-700 p-2 rounded-lg">
+                    <label for="matrizSelect" class="text-white text-sm block mb-1">Matriz CazéTV:</label>
+                    <select id="matrizSelect" v-model="selectedMatriz" @change="handleMatrizChange" class="w-full bg-gray-800 text-white p-2 rounded border border-gray-600" 
+                            :disabled="isLoading">
+                        <option v-for="matriz in matrizes" :key="matriz.id" :value="matriz.id">{{ matriz.fields && matriz.fields.MatchID ? matriz.fields.MatchID : (matriz.fields && matriz.fields.fldlG70v4UpwALCav ? matriz.fields.fldlG70v4UpwALCav : matriz.fields ? Object.values(matriz.fields)[0] : 'Unnamed Match') }}</option>
+                    </select>
+                </div>
+            </div>
+        </header>
+
+        <!-- Loading Overlay -->
+        <div v-if="isLoading" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-6 rounded-lg shadow-xl flex flex-col items-center">
+                <div class="w-16 h-16 border-t-4 border-b-4 border-blue-500 rounded-full animate-spin mb-4"></div>
+                <p class="text-gray-800 text-lg font-semibold">Carregando script...</p>
+                <p class="text-gray-600 text-sm mt-2">Buscando dados e organizando as linhas do roteiro</p>
+            </div>
+        </div>
+
+        <!-- Dynamic Match ID Title -->
+        <div v-if="selectedMatriz && matrizes.length" class="text-gray-800 p-3 mb-4 text-center">
+            <h2 class="text-2xl font-bold">{{ getSelectedMatchTitle() }}</h2>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 gap-6">
+            <!-- Script Editor Section -->
+            <!-- On Air Indicator -->
+            <div v-if="isRunning" class="bg-red-600 text-white p-4 rounded-lg mb-4 flex items-center justify-center">
+                <div class="w-4 h-4 bg-red-300 rounded-full mr-2 animate-pulse"></div>
+                <span class="font-bold">ON AIR</span>
+            </div>
+            
+            <!-- Script Editor -->
+            <div class="bg-white rounded-lg shadow-lg p-6 overflow-auto">
+                <h2 class="text-xl font-semibold mb-3 sticky top-0 bg-white z-10">Script Editor</h2>
+                
+                <!-- Timing Controls -->
+                <div class="bg-gray-50 p-4 rounded-md mb-4">
+                    <h3 class="text-lg font-medium mb-2 sticky top-0 bg-gray-50 z-10">Timing Controls</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 sticky top-0">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Start Time (HH:MM:SS)</label>
+                            <input v-model="startTime" @change="recalculateTimes" class="w-full p-2 border rounded" placeholder="08:00:00">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Total Duration (HH:MM:SS)</label>
+                            <input v-model="totalDuration" @change="calculateOverflow" class="w-full p-2 border rounded" placeholder="01:00:00">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Calculated Duration</label>
+                            <div class="w-full p-2 border rounded bg-white">{{ calculatedTotalDuration }}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Script Lines Table -->
+                <div class="mb-4 overflow-x-auto">
+                    <table class="min-w-full border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100">
+                                <th class="border px-4 py-2 text-left w-8">Group</th>
+                                <th class="border px-4 py-2 text-left w-12">#</th>
+                                <th class="border px-4 py-2 text-left w-8">Details</th>
+                                <th class="border px-4 py-2 text-left w-24">Type</th>
+                                <th class="border px-4 py-2 text-left w-auto">Content</th>
+                                <th class="border px-4 py-2 text-left w-24">Duration</th>
+                                <th class="border px-4 py-2 text-left w-24">Planned Time</th>
+                                <th class="border px-4 py-2 text-left w-24">Current Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template v-for="(line, index) in scriptLines" :key="index">
+                                <!-- Moment Group Header -->
+                                <tr v-if="shouldShowGroupHeader(index)" class="bg-gray-200">
+                                    <td colspan="8" class="border px-4 py-2">
+                                        <div class="flex flex-col">
+                                            <div class="font-bold mb-1">{{ line.moment || 'Ungrouped' }}</div>
+                                            <div class="grid grid-cols-3 gap-2 text-xs">
+                                                <div>
+                                                    <span class="font-semibold">Total Duration: </span>
+                                                    <input 
+                                                        v-model="getGroupTotalDuration(line.moment)" 
+                                                        @change="updateGroupTotalDuration(line.moment, $event.target.value)"
+                                                        class="w-24 p-1 border rounded text-xs" 
+                                                        placeholder="HH:MM:SS">
+                                                </div>
+                                                <div>
+                                                    <span class="font-semibold">Calculated: </span>
+                                                    <span>{{ calculateGroupDuration(line.moment) }}</span>
+                                                </div>
+                                                <div>
+                                                    <span class="font-semibold">Overflow: </span>
+                                                    <span :class="{'text-red-600': isGroupOverflowNegative(line.moment), 'text-green-600': !isGroupOverflowNegative(line.moment)}">
+                                                        {{ calculateGroupOverflow(line.moment) }}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr class="hover:bg-gray-50" :class="{'bg-blue-50': line.selected, 'bg-yellow-100': currentLineIndex === index && isRunning}"
+                                    :draggable="line.selected"
+                                    @dragstart="handleDragStart($event, index)"
+                                    @dragover.prevent
+                                    @dragenter="handleDragEnter($event, index)"
+                                    @dragleave="handleDragLeave($event)"
+                                    @dragend="handleDragEnd"
+                                    @drop="handleDrop($event, index)">
+                                <td class="border px-4 py-2 text-center">
+                                    <input type="checkbox" v-model="line.selected" class="h-4 w-4">
+                                </td> 
+                                <td class="border px-4 py-2">{{ index + 1 }}</td>
+                                <td class="border px-4 py-2 text-center">
+                                    <button @click="openLineDetails(index)" class="text-blue-500 hover:text-blue-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                    </button>
+                                </td>
+                                <td class="border px-4 py-2">
+                                    <!-- Simple select element for type instead of custom dropdown -->
+                                    <select v-model="line.type" 
+                                            @change="updateAirtableType(index)"
+                                            class="w-full p-1 border rounded"
+                                            :style="{ backgroundColor: getTypeColor(line.type), color: getTextColor(line.type) }">
+                                        <option value="">Select type</option>
+                                        <option v-for="typeOption in typeOptions" 
+                                                :key="typeOption.id" 
+                                                :value="typeOption.name"
+                                                :style="{ backgroundColor: convertAirtableColorToCSS(typeOption.color), color: getContrastColor(convertAirtableColorToCSS(typeOption.color)) }">
+                                            {{ typeOption.name }}
+                                        </option>
+                                    </select>
+                                </td>
+                                <td class="border px-4 py-2" @change="line.airtableUpdated = false">
+                                    <input v-model="line.content" @input="onContentChange(index)" class="w-full p-1 border rounded" placeholder="Script content...">
+                                </td>
+                                <td class="border px-4 py-2">
+                                    <input v-model="line.duration" @change="onDurationChange(index); recalculateTimes()" class="w-full p-1 border rounded" placeholder="MM:SS">
+                                </td>
+                                <td class="border px-4 py-2">{{ line.calculatedTime }}</td>
+                                <td class="border px-4 py-2" :class="{'bg-red-100 text-red-800': isLineOvertime(index)}">{{ line.currentTime || '00:00:00' }}</td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="flex justify-between items-center">
+                    <button @click="confirmDeleteLine()" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors">
+                        Delete Line
+                    </button>
+                    <button @click="addScriptLine" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 transition-colors">
+                        Add Line
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Line Details Modal -->
+            <div v-if="showLineDetails" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div class="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-semibold">Script Line Details</h3>
+                        <button @click="showLineDetails = false" class="text-gray-500 hover:text-gray-700">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Moment</label>
+                            <select v-model="currentLine.moment" @change="updateMoment" class="w-full p-2 border rounded">
+                                <option value="">Select Moment</option>
+                                <option v-for="option in momentOptions" :key="option.id" :value="option.name" :selected="currentLine && option.name === currentLine.moment">
+                                    {{ option.name }}
+                                </option> 
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="flex justify-center mt-6">
+                        <button @click="showLineDetails = false" 
+                                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Delete Line Confirmation Modal -->
+            <div v-if="showDeleteConfirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-semibold">Confirm Line Deletion</h3>
+                        <button @click="showDeleteConfirm = false" class="text-gray-500 hover:text-gray-700">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div class="space-y-4">
+                        <p class="text-center text-lg">Are you sure you want to delete this line?</p>
+                        <p class="text-center text-gray-600">This action cannot be undone.</p>
+                    </div>
+                    
+                    <div class="flex justify-center space-x-4 mt-6">
+                        <button @click="showDeleteConfirm = false" 
+                                class="px-4 py-2 bg-gray-300 text-gray-800 rounded hover:bg-gray-400 transition-colors">
+                            Cancel
+                        </button>
+                        <button @click="deleteConfirmed(); showDeleteConfirm = false" 
+                                class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                            Delete Line
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Broadcast Confirmation Modal -->
+            <div v-if="showBroadcastConfirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-semibold">Confirm Broadcast Start</h3>
+                        <button @click="showBroadcastConfirm = false" class="text-gray-500 hover:text-gray-700">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div class="space-y-4">
+                        <p class="text-center text-lg">Are you sure you want to start the broadcast?</p>
+                        <p class="text-center text-gray-600">This will begin the show timers and activate the script tracking.</p>
+                    </div>
+                    
+                    <div class="flex justify-center space-x-4 mt-6">
+                        <button @click="showBroadcastConfirm = false" 
+                                class="px-4 py-2 bg-gray-300 text-gray-800 rounded hover:bg-gray-400 transition-colors">
+                            Cancel
+                        </button>
+                        <button @click="startBroadcast(); showBroadcastConfirm = false" 
+                                class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                            Start Broadcast
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Emergency Modal Close Button (Fixed Position) -->
+            <div v-if="showBroadcastConfirm" class="fixed top-4 right-4 z-[100]">
+                <button @click="showBroadcastConfirm = false" 
+                        class="bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-2 px-4 rounded-full shadow-lg flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Emergency Close
+                </button>
+            </div>
+
+            <!-- Fixed Broadcast Controls -->
+            <div class="fixed left-4 top-1/2 transform -translate-y-1/2 bg-white p-4 rounded-lg shadow-lg z-50 w-64">
+                <h3 class="text-lg font-medium mb-4 text-center">Broadcast Controls</h3>
+                
+                <!-- Overflow -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Overflow</label>
+                    <div class="w-full p-2 border rounded" 
+                         :class="{'bg-green-100 text-green-800': isOverflowPositive, 'bg-red-100 text-red-800': !isOverflowPositive}">
+                        {{ overflowTime }}
+                    </div>
+                    
+                </div>
+                
+                <!-- Current Group -->
+                <div class="mb-4 bg-gray-100 p-3 rounded-lg">
+                    <div class="font-medium text-base text-center mb-2">{{ getCurrentGroupName() }}</div>
+                    <div class="grid grid-cols-1 gap-2 mb-2">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Group Countdown</label>
+                            <div class="w-full p-1 border rounded text-sm font-bold"
+                                 :class="{'bg-red-100 text-red-800': isCurrentGroupOvertime, 'bg-white': !isCurrentGroupOvertime}">
+                                {{ currentGroupRemainingTime }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Runtime Timers -->
+                <div class="space-y-3 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Show Runtime</label>
+                        <div class="w-full p-2 border rounded bg-white">{{ showRuntime }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Current Line Runtime</label>
+                        <div class="w-full p-2 border rounded" :class="{'bg-red-100': isCurrentLineOvertime, 'bg-white': !isCurrentLineOvertime}">{{ currentLineRuntime }}</div>
+                    </div>
+                </div>
+                
+                <!-- Start/Stop Button -->
+                <button @click="isRunning ? stopBroadcast() : confirmBroadcast()" class="w-full bg-red-600 text-white px-4 py-3 rounded hover:bg-red-700 transition-colors">
+                    {{ isRunning ? 'Stop Broadcast' : 'Start Broadcast' }}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { SDK } from "https://webdraw.com/webdraw-sdk@v1";
+        import WebdrawTextarea from 'https://assets.webdraw.app/vue/textarea.js';
+
+        const { createApp, ref, onMounted, watch } = Vue;
+
+        createApp({
+            components: {
+                'webdraw-textarea': WebdrawTextarea
+            },
+            setup() {
+                const scriptEditor = ref(null);
+                const scriptContent = ref('');
+                const matrizes = ref([]);
+                const selectedMatriz = ref('');
+                const horarioSemData = ref('');
+                const isLoading = ref(true);
+                const startTime = ref('08:00:00');
+                const totalDuration = ref('01:00:00');
+                const scriptLines = ref([{ content: '', duration: '00:00', calculatedTime: '', selected: false, moment: '' }]);
+                const isRunning = ref(false);
+                const currentLineIndex = ref(0);
+                const showRuntime = ref('00:00:00');
+                const currentLineRuntime = ref('00:00:00');
+                const isCurrentLineOvertime = ref(false);
+                const showLineDetails = ref(false); 
+                const showDeleteConfirm = ref(false);
+                const currentLine = ref(null);
+                const showBroadcastConfirm = ref(false);
+                const momentOptions = ref([]);
+                const typeOptions = ref([]);
+                
+                const segments = ref([
+                    { title: 'Opening', duration: 180 },
+                    { title: 'News Segment', duration: 600 },
+                    { title: 'Weather Report', duration: 300 },
+                    { title: 'Sports Update', duration: 420 },
+                    { title: 'Closing', duration: 120 }
+                ]);
+
+                const calculatedTotalDuration = ref('00:00:00');
+                const overflowTime = ref('00:00:00');
+                const isOverflowPositive = ref(true);
+
+                const formatTime = (seconds) => {
+                    const mins = Math.floor(seconds / 60);
+                    const secs = seconds % 60;
+                    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                };
+
+                // Completely redesigned function to sort script lines by moment - now more stable
+                const sortScriptLinesByMoment = () => {
+                    console.log("Starting moment sorting...");
+                    
+                    // Only proceed if we have moment options loaded
+                    if (!momentOptions.value || momentOptions.value.length === 0) {
+                        console.log('Cannot sort: moment options not loaded yet');
+                        return;
+                    }
+                    
+                    // Debug: log what we have before sorting
+                    console.log('Before sorting - lines:', 
+                        scriptLines.value.map((line, i) => `Line ${i+1}: "${line.moment || 'None'}"`));
+                    console.log('Available moment options:', 
+                        momentOptions.value.map(opt => opt.name));
+                    
+                    // Create a map for ordering based on moment options
+                    const momentOrderMap = new Map();
+                    
+                    // Map all moment options with their index for ordering
+                    momentOptions.value.forEach((option, index) => {
+                        momentOrderMap.set(option.name, index);
+                    });
+                    
+                    // Add empty and 'Ungrouped' as the last options
+                    momentOrderMap.set('', Number.MAX_SAFE_INTEGER - 1);
+                    momentOrderMap.set('Ungrouped', Number.MAX_SAFE_INTEGER);
+                    
+                    // Debug: log the ordering map
+                    console.log('Moment order map:', Array.from(momentOrderMap.entries()));
+                    
+                    // Deep clone the array to avoid Vue reactivity issues during sorting
+                    const linesToSort = JSON.parse(JSON.stringify(scriptLines.value));
+                    
+                    // Sort by moment
+                    linesToSort.sort((a, b) => {
+                        // Standardize treatment of empty moments
+                        const momentA = a.moment || '';
+                        const momentB = b.moment || '';
+                        
+                        // Get the order index for each moment, defaulting to max value if not found
+                        const orderA = momentOrderMap.has(momentA) ? momentOrderMap.get(momentA) : Number.MAX_SAFE_INTEGER;
+                        const orderB = momentOrderMap.has(momentB) ? momentOrderMap.get(momentB) : Number.MAX_SAFE_INTEGER;
+                        
+                        return orderA - orderB;
+                    });
+                    
+                    // Debug: log the result of sorting
+                    console.log('After sorting - lines:', 
+                        linesToSort.map((line, i) => `Line ${i+1}: "${line.moment || 'None'}"`));
+                    
+                    // Replace the entire array at once to ensure Vue updates properly
+                    scriptLines.value = linesToSort;
+                    
+                    // After sorting, recalculate times to ensure they reflect the new order
+                    recalculateTimes();
+                    
+                    console.log("Sorting complete");
+                };
+                
+                // Function to get all unique moments in the current script
+                const getUniqueMoments = () => {
+                    const moments = new Set();
+                    scriptLines.value.forEach(line => {
+                        moments.add(line.moment || 'Ungrouped');
+                    });
+                    return Array.from(moments);
+                };
+                
+                // Simplified function to ensure consistent grouping
+                const ensureConsistentGrouping = () => {
+                    try {
+                        // Sort the script lines by moment
+                        sortScriptLinesByMoment();
+                        
+                        // Log the final grouping for debugging
+                        console.log('Final grouping:', 
+                            scriptLines.value.map((line, index) => {
+                                return {index, moment: line.moment || 'Ungrouped'};
+                            })
+                        );
+                    } catch (error) {
+                        console.error('Error ensuring consistent grouping:', error);
+                    }
+                };
+
+                const addScriptLine = () => {
+                    scriptLines.value.push({ 
+                        content: '', 
+                        duration: '00:00',
+                        type: '',
+                        calculatedTime: '',
+                        currentTime: '00:00',
+                        selected: false,
+                        moment: '',
+                        showTypeDropdown: false, // Add this property to new lines
+                    });
+                    recalculateTimes();
+                };
+
+                const removeScriptLine = (index) => {
+                    if (scriptLines.value.length > 1) {
+                        scriptLines.value.splice(index, 1);
+                        recalculateTimes();
+                    }
+                };
+
+                const fetchEspelhoItemDetails = async (itemId) => {
+                    if (!itemId) return null;
+                    
+                    try {
+                        // Define the base ID and table ID for Espelho items
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        const tableId = 'tbliRcyIlg0feNW3J';
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${itemId}`;
+                        
+                        // Make the API request with proper authorization
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            } 
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`Airtable API error: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log(`Fetched item details for ${itemId}:`, data);
+                        return data;
+                    } catch (error) {
+                        console.error('Error fetching item details:', error);
+                        return null;
+                    }
+                };
+                
+                const updateAirtableRecord = async (recordId, content) => {
+                    // Implementation for updating Airtable records will go here
+                    console.log(`Would update record ${recordId} with content: ${content}`);
+                };
+
+                const fetchEspelhoItems = async () => {
+                    try {
+                        console.log("Processing matriz ID:", selectedMatriz.value);
+                        
+                        // Fetch matching linked records from Espelho table
+                        isLoading.value = true;
+                        
+                        // Make sure moment options are loaded first
+                        await loadMomentOptions().catch(error => {
+                            console.error("Error loading moment options:", error);
+                            // Use fallback options
+                            momentOptions.value = [
+                                { id: 'opt1', name: 'Pré-Jogo', color: 'blue' },
+                                { id: 'opt2', name: 'Primeiro Tempo', color: 'green' },
+                                { id: 'opt3', name: 'Intervalo', color: 'orange' },
+                                { id: 'opt4', name: 'Segundo Tempo', color: 'red' },
+                                { id: 'opt5', name: 'Pós-Jogo', color: 'purple' }
+                            ];
+                        });
+                        
+                        // Also load type options
+                        await loadTypeOptions().catch(error => {
+                            console.error("Error loading type options:", error);
+                            // Use fallback options
+                            typeOptions.value = [
+                                { id: 'typ1', name: 'VT', color: 'redBright' },
+                                { id: 'typ2', name: 'Ao vivo', color: 'greenBright' },
+                                { id: 'typ3', name: 'Comentário', color: 'blueBright' },
+                                { id: 'typ4', name: 'Intervalo', color: 'yellowBright' },
+                                { id: 'typ5', name: 'Transição', color: 'purpleBright' }
+                            ];
+                        });
+                        
+                        const baseId = 'appdAaS1hPh5nHRxS';  // Base ID
+                        const tableId = 'tbliRcyIlg0feNW3J';  // Table ID for Espelho
+                        const linkFieldId = 'fld6xKBtLJzTSjR6F'; // Field ID for the "Matriz" field
+                        const momentFieldId = 'fldniXeuy8hlTgN5Y'; // Field ID for "Momento" field
+                        const typeFieldId = 'fldjjGWagp4UoA2od'; // Field ID for "Tipo" field
+                        const currentTimeFieldId = 'fldTqULyPGyRkBdef'; // Field ID for "Tempo Entregue" field
+                        const contentFieldId = 'fldfqskGJlUlyN3y4'; // Field ID for "Entrega" field
+                        
+                        // Verify that we have a selected record before proceeding
+                        const selectedRecord = matrizes.value.find(m => m.id === selectedMatriz.value);
+                        if (!selectedRecord || !selectedRecord.fields) {
+                            console.error("Selected matrix record not found or has no fields");
+                            scriptLines.value = [{ 
+                                content: 'Erro: Matriz selecionada não encontrada. Tente atualizar a página.', 
+                                duration: '00:00',
+                                calculatedTime: '',
+                                currentTime: '00:00:00',
+                                selected: false,
+                                moment: '' 
+                            }];
+                            isLoading.value = false;
+                            return;
+                        }
+                    
+                        // Get the Espelho das Partidas field value
+                        const espelhoLinks = selectedRecord.fields.fldFLsnVg6xHDMRn0 || 
+                                        selectedRecord.fields['Espelho das Partidas'] || [];
+                    
+                        console.log("Espelho links from Airtable:", espelhoLinks);
+                        
+                        if (!espelhoLinks || espelhoLinks.length === 0) {
+                            console.warn("No espelho links found for matrix:", selectedMatriz.value);
+                            scriptLines.value = [{ 
+                                content: 'Não foram encontradas linhas de roteiro para esta matriz. Verifique no Airtable.', 
+                                duration: '00:00',
+                                calculatedTime: '',
+                                currentTime: '00:00:00',
+                                selected: false,
+                                moment: '' 
+                            }];
+                            isLoading.value = false;
+                            return;
+                        }
+                        
+                        // Create a timeout promise for fail-safe
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Airtable request timeout após 10 segundos')), 10000);
+                        });
+                        
+                        // Construct a filter to get all the records we need at once
+                        const formula = encodeURIComponent(`OR(${espelhoLinks.map(id => `RECORD_ID()='${id}'`).join(',')})`);
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?filterByFormula=${formula}`;
+                        
+                        console.log("Fetching all records with URL:", url);
+                        
+                        // Make the API request with proper authorization
+                        const fetchPromise = fetch(url, {
+                            method: 'GET',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            } 
+                        });
+                        
+                        // Race the fetch against a timeout
+                        const response = await Promise.race([fetchPromise, timeoutPromise])
+                            .catch(error => {
+                                console.error('Error fetching Airtable data:', error.message);
+                                scriptLines.value = [{ 
+                                    content: `Erro de conexão com Airtable: ${error.message}. Tente atualizar a página.`, 
+                                    duration: '00:00',
+                                    calculatedTime: '',
+                                    currentTime: '00:00:00',
+                                    selected: false,
+                                    moment: '' 
+                                }];
+                                isLoading.value = false;
+                                throw error; // Re-throw to exit the function
+                            });
+                        
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`Error fetching records: ${response.status}`, errorText);
+                            scriptLines.value = [{ 
+                                content: `Erro de API do Airtable: ${response.status}. Tente atualizar a página.`, 
+                                duration: '00:00',
+                                calculatedTime: '',
+                                currentTime: '00:00:00',
+                                selected: false,
+                                moment: '' 
+                            }];
+                            isLoading.value = false;
+                            return;
+                        }
+                        
+                        const data = await response.json();
+                        console.log("Airtable response data:", data);
+                        
+                        if (!data || !data.records || !data.records.length) {
+                            console.error("No records found in response");
+                            isLoading.value = false;
+                            return;
+                        }
+                        
+                        // Create a map for easy record lookup
+                        const recordsById = {};
+                        data.records.forEach(record => {
+                            recordsById[record.id] = record;
+                        });
+                        
+                        console.log("Records by ID map:", Object.keys(recordsById));
+                        
+                        // Create script lines from the records
+                        const newScriptLines = [];
+                        
+                        // For each espelho link, try to find the corresponding record
+                        for (let i = 0; i < espelhoLinks.length; i++) {
+                            const linkId = espelhoLinks[i];
+                            const record = recordsById[linkId];
+                            
+                            console.log(`Processing link ${i+1}/${espelhoLinks.length}, ID: ${linkId}`);
+                            
+                            if (!record) {
+                                console.log(`No record found for ID: ${linkId}`);
+                                newScriptLines.push({
+                                    content: "", 
+                                duration: '00:00',
+                                type: '',
+                                calculatedTime: '',
+                                currentTime: '00:00:00',
+                                airtableId: linkId,
+                                airtableUpdated: false,
+                                selected: false,
+                                moment: ''
+                                });
+                                continue;
+                            }
+                            
+                            console.log(`Record ${i} data:`, record);
+                            
+                            if (!record.fields) {
+                                console.log(`No fields in record: ${linkId}`);
+                                newScriptLines.push({
+                                    content: "", 
+                                    duration: '00:00',
+                                    type: '',
+                                    calculatedTime: '',
+                                    currentTime: '00:00:00',
+                                    airtableId: linkId,
+                                    airtableUpdated: false,
+                                    selected: false,
+                                    moment: ''
+                                });
+                                continue;
+                            }
+                            
+                            // Log all fields in this record
+                            console.log(`Record ${i} field keys:`, Object.keys(record.fields));
+                            
+                            // Special handling for the moment field - try all possible variations
+                            let momentValue = null;
+                            
+                            // Try direct field ID access first
+                            if (record.fields[momentFieldId] !== undefined) {
+                                momentValue = record.fields[momentFieldId];
+                                console.log(`Found moment by field ID: ${momentValue}`);
+                            } 
+                            // Try by name
+                            else if (record.fields['Momento'] !== undefined) {
+                                momentValue = record.fields['Momento'];
+                                console.log(`Found moment by name 'Momento': ${momentValue}`);
+                            }
+                            // Try by lowercase name
+                            else if (record.fields['momento'] !== undefined) {
+                                momentValue = record.fields['momento'];
+                                console.log(`Found moment by name 'momento': ${momentValue}`);
+                            }
+                            // Try searching all fields
+                            else {
+                                // Look through all fields to find any that might be the moment
+                                for (const key in record.fields) {
+                                    const value = record.fields[key];
+                                    console.log(`Field ${key}: ${JSON.stringify(value)}`);
+                                    
+                                    // If this is potentially a moment field (contains moment options)
+                                    if (typeof value === 'string' && 
+                                        momentOptions.value.some(opt => opt.name === value)) {
+                                        momentValue = value;
+                                        console.log(`Found potential moment in field ${key}: ${momentValue}`);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Get content field
+                            const content = record.fields[contentFieldId] || record.fields['Entrega'] || record.fields['entrega'] || record.fields['Conteúdo'] || record.fields['conteúdo'] || record.fields['Script'] || "";
+                            
+                            // Get type field
+                            const type = record.fields[typeFieldId] || record.fields['Tipo'] || record.fields['tipo'] || "";
+                            
+                            // Get duration field and convert from seconds to MM:SS format
+                            let duration = '00:00';
+                            const durationSeconds = record.fields.fldHXLEnnwgTtIEkY || record.fields['Duração'] || record.fields['duração'] || record.fields['Duration'];
+                            
+                            if (durationSeconds !== undefined && durationSeconds !== null) {
+                                // Convert seconds to MM:SS format
+                                const durationValue = parseInt(durationSeconds);
+                                if (!isNaN(durationValue)) {
+                                    const mins = Math.floor(durationValue / 60);
+                                    const secs = durationValue % 60;
+                                    duration = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                                    console.log(`Converted duration ${durationSeconds}s to ${duration}`);
+                                }
+                            }
+                            
+                            // Get Tempo Entregue (current time) field
+                            let currentTime = '00:00:00';
+                            const tempoEntregue = record.fields[currentTimeFieldId] || record.fields['Tempo Entregue'] || record.fields['tempo entregue'];
+                            
+                            if (tempoEntregue !== undefined && tempoEntregue !== null && tempoEntregue !== '') {
+                                currentTime = tempoEntregue;
+                                console.log(`Found Tempo Entregue: ${currentTime}`);
+                            }
+                            
+                            // Add to script lines array
+                            newScriptLines.push({
+                                content: content || '', 
+                                duration: duration,
+                                type: type || '',
+                                calculatedTime: '',
+                                currentTime: currentTime,
+                                airtableId: record.id,
+                                airtableUpdated: true,
+                                airtableDurationUpdated: true,
+                                airtableTypeUpdated: true,
+                                airtableCurrentTimeUpdated: true,
+                                selected: false,
+                                moment: momentValue || ''
+                            });
+                        }
+                        
+                        // Log created script lines
+                        console.log("Created script lines:", newScriptLines.map(line => ({
+                            content: line.content.substring(0, 10) + (line.content.length > 10 ? '...' : ''),
+                            moment: line.moment || 'EMPTY',
+                            airtableId: line.airtableId,
+                            currentTime: line.currentTime
+                        })));
+                        
+                        // Replace script lines and sort
+                        scriptLines.value = newScriptLines;
+                        
+                        // If still no moments, try a last resort approach: direct field fetching
+                        const linesWithoutMoment = scriptLines.value
+                            .map((line, index) => ({ line, index }))
+                            .filter(item => !item.line.moment && item.line.airtableId);
+                        
+                        if (linesWithoutMoment.length > 0) {
+                            console.log(`Still missing ${linesWithoutMoment.length} moments, trying direct field access...`);
+                            
+                            // Try a final direct field access approach
+                            for (const { line, index } of linesWithoutMoment) {
+                                try {
+                                    const recordUrl = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                                    
+                                    const recordResponse = await fetch(recordUrl, {
+                                        method: 'GET',
+                                        headers: { 
+                                            'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                            'Content-Type': 'application/json'
+                                        } 
+                                    });
+                                    
+                                    if (!recordResponse.ok) {
+                                        console.error(`Error fetching record ${line.airtableId}: ${recordResponse.status}`);
+                                        continue;
+                                    }
+                                    
+                                    const recordData = await recordResponse.json();
+                                    
+                                    if (!recordData || !recordData.fields) {
+                                        console.log(`No fields in record ${line.airtableId}`);
+                                        continue;
+                                    }
+                                    
+                                    console.log(`Direct record fetch for ${line.airtableId}:`, recordData);
+                                    
+                                    // Special handling for the moment field
+                                    let foundMoment = null;
+                                    
+                                    // Try all possible field names
+                                    if (recordData.fields[momentFieldId] !== undefined) {
+                                        foundMoment = recordData.fields[momentFieldId];
+                                    } else if (recordData.fields['Momento'] !== undefined) {
+                                        foundMoment = recordData.fields['Momento'];
+                                    } else if (recordData.fields['momento'] !== undefined) {
+                                        foundMoment = recordData.fields['momento'];
+                                    } else {
+                                        // Try all fields to find one that matches a moment option
+                                        for (const key in recordData.fields) {
+                                            const value = recordData.fields[key];
+                                            if (typeof value === 'string' && 
+                                                momentOptions.value.some(opt => opt.name === value)) {
+                                                foundMoment = value;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (foundMoment) {
+                                        console.log(`Found moment in direct fetch: ${foundMoment}`);
+                                        scriptLines.value[index].moment = foundMoment;
+                                    }
+                                    
+                                    // Also check for current time (Tempo Entregue)
+                                    if (recordData.fields[currentTimeFieldId] !== undefined) {
+                                        const foundCurrentTime = recordData.fields[currentTimeFieldId];
+                                        console.log(`Found current time in direct fetch: ${foundCurrentTime}`);
+                                        scriptLines.value[index].currentTime = foundCurrentTime;
+                                    }
+                                    
+                                    // Check for content (Entrega field)
+                                    const content = recordData.fields[contentFieldId] || recordData.fields['Entrega'] || recordData.fields['entrega'] || recordData.fields['Conteúdo'] || recordData.fields['conteúdo'] || recordData.fields['Script'] || "";
+                                    if (content && content !== scriptLines.value[index].content) {
+                                        console.log(`Found content in direct fetch: "${content.substring(0, 20)}${content.length > 20 ? '...' : ''}"`);
+                                        scriptLines.value[index].content = content;
+                                        scriptLines.value[index].airtableUpdated = true;
+                                    }
+                                } catch (error) {
+                                    console.error(`Error in direct record fetch for ${line.airtableId}:`, error);
+                                }
+                            }
+                        }
+                        
+                        // FINAL ATTEMPT: Hardcode moments based on Airtable IDs if they still don't appear
+                        console.log("Final script lines before sorting:", scriptLines.value.map(line => ({
+                            content: line.content.substring(0, 10) + (line.content.length > 10 ? '...' : ''),
+                            moment: line.moment || 'EMPTY',
+                            airtableId: line.airtableId,
+                            currentTime: line.currentTime
+                        })));
+                        
+                        // Sort and calculate times
+                        sortScriptLinesByMoment();
+                        
+                        // Set up content watchers
+                        scriptLines.value.forEach((line, index) => {
+                            if (line.airtableId) {
+                                // Watch for content changes
+                                Vue.watch(() => line.content, (newContent) => {
+                                    if (!line.airtableUpdated && line.airtableId) {
+                                        updateAirtableContent(scriptLines.value.indexOf(line));
+                                    }
+                                    line.airtableUpdated = false;
+                                });
+                                
+                                // Watch for duration changes
+                                Vue.watch(() => line.duration, (newDuration, oldDuration) => {
+                                    if (!line.airtableDurationUpdated && line.airtableId && newDuration !== oldDuration) {
+                                        updateAirtableDuration(scriptLines.value.indexOf(line));
+                                        recalculateTimes();
+                                    }
+                                    line.airtableDurationUpdated = false;
+                                });
+                                
+                                // Watch for type changes
+                                Vue.watch(() => line.type, (newType, oldType) => {
+                                    if (!line.airtableTypeUpdated && line.airtableId && newType !== oldType) {
+                                        updateAirtableType(scriptLines.value.indexOf(line));
+                                    }
+                                    line.airtableTypeUpdated = false;
+                                });
+                                
+                                // Watch for current time changes
+                                Vue.watch(() => line.currentTime, (newCurrentTime, oldCurrentTime) => {
+                                    if (!line.airtableCurrentTimeUpdated && line.airtableId && newCurrentTime !== oldCurrentTime) {
+                                        updateAirtableCurrentTime(scriptLines.value.indexOf(line), newCurrentTime);
+                                    }
+                                    line.airtableCurrentTimeUpdated = false;
+                                });
+                            }
+                        });
+                        
+                    } catch (error) {
+                        console.error('Error fetching Espelho items:', error);
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+                
+                // Update Airtable record when script line content changes
+                const updateAirtableContent = async (lineIndex) => {
+                    const line = scriptLines.value[lineIndex];
+                    if (line && line.airtableId) {
+                        try {
+                            // Define the base ID and table ID for Espelho items
+                            const baseId = 'appdAaS1hPh5nHRxS'; 
+                            const tableId = 'tbliRcyIlg0feNW3J';
+                            const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                            
+                            // Make the API request with proper authorization
+                            const response = await fetch(url, {
+                                method: 'PATCH',
+                                headers: { 
+                                    'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    fields: {
+                                        [contentFieldId]: line.content
+                                    }
+                                })
+                            });
+                            
+                            if (!response.ok) {
+                                throw new Error(`Airtable API error: ${response.status}`);
+                            }
+                            
+                            console.log(`Updated Airtable record ${line.airtableId} with content: "${line.content}"`);
+                            hasUnsavedChanges.value = false;
+                        } catch (error) {
+                            console.error('Error updating Airtable record:', error);
+                            hasUnsavedChanges.value = true;
+                        }
+                    }
+                };
+
+                // New function to update duration in Airtable
+                const updateAirtableDuration = async (lineIndex) => {
+                    const line = scriptLines.value[lineIndex];
+                    if (line && line.airtableId) {
+                        try {
+                            // Define the base ID and table ID for Espelho items
+                            const baseId = 'appdAaS1hPh5nHRxS'; 
+                            const tableId = 'tbliRcyIlg0feNW3J';
+                            const durationFieldId = 'fldHXLEnnwgTtIEkY';
+                            const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                            
+                            // Convert MM:SS format to seconds for Airtable
+                            const durationParts = line.duration.split(':');
+                            let durationInSeconds = 0;
+                            
+                            if (durationParts.length === 2) {
+                                const minutes = parseInt(durationParts[0]) || 0;
+                                const seconds = parseInt(durationParts[1]) || 0;
+                                durationInSeconds = minutes * 60 + seconds;
+                            }
+                            
+                            console.log(`Converting duration ${line.duration} to ${durationInSeconds} seconds for Airtable`);
+                            
+                            // Create a timeout promise
+                            const timeoutPromise = new Promise((_, reject) => {
+                                setTimeout(() => reject(new Error('Request timeout')), 5000);
+                            });
+                            
+                            // Make the API request
+                            const fetchPromise = fetch(url, {
+                                method: 'PATCH',
+                                headers: {
+                                    'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143',
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    fields: {
+                                        'fldHXLEnnwgTtIEkY': durationInSeconds
+                                    }
+                                })
+                            });
+                            
+                            // Race the fetch against a timeout
+                            const response = await Promise.race([fetchPromise, timeoutPromise]);
+                            
+                            if (!response.ok) {
+                                const errorText = await response.text();
+                                console.error(`Airtable error response: ${errorText}`);
+                                throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                            }
+                            
+                            const data = await response.json();
+                            console.log('Updated Airtable duration:', data);
+                            
+                            line.airtableDurationUpdated = true;
+                            hasUnsavedChanges.value = false;
+                        } catch (error) {
+                            console.error('Error updating duration in Airtable:', error);
+                            hasUnsavedChanges.value = true;
+                        }
+
+                        // Recalculate times regardless of Airtable update success
+                        recalculateTimes();
+                    }
+                };
+
+                // Watch for changes in the selected matriz
+                const watchSelectedMatriz = () => {
+                    if (selectedMatriz.value) {
+                        updateStartTimeFromAirtable();
+                    }
+                };
+
+                const updateStartTimeFromAirtable = () => {
+                    if (!selectedMatriz.value || !matrizes.value.length) return;
+                    
+                    const selectedRecord = matrizes.value.find(m => m.id === selectedMatriz.value);
+                    if (!selectedRecord || !selectedRecord.fields) return;
+                    
+                    // Get the Horário Sem Data field value (field ID: flddrSgF0h1I6Ha7i)
+                    const horario = selectedRecord.fields.flddrSgF0h1I6Ha7i || 
+                                   selectedRecord.fields['Horário Sem Data'];
+                    const espelhoLinks = selectedRecord.fields.fldFLsnVg6xHDMRn0 || selectedRecord.fields['Espelho das Partidas'] || [];
+                    
+                    if (horario) {
+                        // Update the start time input
+                        startTime.value = horario;
+                    }
+                };
+
+                const initAirtable = async () => {
+                    try {
+                        isLoading.value = true;
+                        console.log('Starting Airtable initialization');
+                        
+                        // Define the base ID, table ID and view ID for Airtable 
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        const tableId = 'tblhdaFB9vDmo2Ebe';
+                        const viewId = 'viw8wfphf7Np5OYBp'; 
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?view=${viewId}`;
+                        
+                        // Create a timeout promise
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Request timeout')), 10000);
+                        });
+                        
+                        // Make the API request with proper authorization 
+                        const fetchPromise = fetch(url, {
+                            method: 'GET',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            } 
+                        });
+                        
+                        // Race the fetch against a timeout
+                        const response = await Promise.race([fetchPromise, timeoutPromise])
+                            .catch(error => {
+                                console.error('Network error during Airtable fetch:', error);
+                                throw new Error('Network error during Airtable fetch');
+                        });
+                        
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`HTTP error! Status: ${response.status}`, errorText);
+                            throw new Error(`Airtable API error: ${errorText}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log('Fetched Airtable records:', data);
+                        
+                        if (data && data.records && data.records.length > 0) {
+                            console.log(`Found ${data.records.length} records in Airtable`);
+                            matrizes.value = data.records;
+                            selectedMatriz.value = data.records[0]?.id || '';
+                            
+                            // Update start time based on the selected record
+                            if (selectedMatriz.value) {
+                                fetchEspelhoItems();
+                            }
+                            updateStartTimeFromAirtable();
+                            console.log('First record fields:', data.records[0]?.fields);
+                            
+                            // Log each record for debugging
+                            data.records.forEach((record, index) => {
+                                console.log(`Record ${index + 1}:`, record.id, record.fields, record.fields ? (record.fields.MatchID || record.fields.fldlG70v4UpwALCav || 'No field data') : 'No field data');
+                            });
+                            
+                            // Make sure Vue updates the dropdown
+                            matrizes.value = [...data.records];
+                            console.log('Dropdown options updated:', matrizes.value.length);
+                        } else {
+                            console.warn('No records found in Airtable response');
+                            matrizes.value = [{ id: 'no-data', fields: { fldlG70v4UpwALCav: 'No data available' } }];
+                        }
+                    } catch (error) {
+                        console.error('Error fetching Airtable data:', error.message);
+                        // Show error in dropdown
+                        matrizes.value = [{ id: 'error', fields: { Nome: `Error: ${error.message}` } }];
+                        selectedMatriz.value = 'error';
+                    } finally {
+                        console.log('Airtable initialization completed');
+                        isLoading.value = false;
+                    }
+                };
+
+                const moveLineUp = () => {
+                    const selectedIndex = scriptLines.value.findIndex(line => line.selected);
+                    if (selectedIndex > 0) {
+                        const temp = scriptLines.value[selectedIndex];
+                        scriptLines.value[selectedIndex] = scriptLines.value[selectedIndex - 1];
+                        scriptLines.value[selectedIndex - 1] = temp;
+                        recalculateTimes();
+                    }
+                };
+                
+                const moveLineDown = () => {
+                    const selectedIndex = scriptLines.value.findIndex(line => line.selected);
+                    if (selectedIndex !== -1 && selectedIndex < scriptLines.value.length - 1) {
+                        const temp = scriptLines.value[selectedIndex];
+                        scriptLines.value[selectedIndex] = scriptLines.value[selectedIndex + 1];
+                        scriptLines.value[selectedIndex + 1] = temp;
+                        recalculateTimes();
+                    }
+                };
+
+                // Function to move selected lines up
+                const moveSelectedLinesUp = () => {
+                    console.log("Moving selected lines up");
+                    const selectedIndices = scriptLines.value
+                        .map((line, index) => line.selected ? index : -1)
+                        .filter(index => index !== -1)
+                        .sort((a, b) => a - b); // Sort indices in ascending order
+
+                    if (selectedIndices.length === 0 || selectedIndices[0] <= 0) {
+                        return; // Can't move up if no lines selected or already at the top
+                    }
+
+                    // Move each selected line up one position
+                    for (let i = 0; i < selectedIndices.length; i++) {
+                        const currentIndex = selectedIndices[i];
+                        if (currentIndex > 0 && !scriptLines.value[currentIndex - 1].selected) {
+                            // Only swap if the line above is not selected
+                            const temp = scriptLines.value[currentIndex];
+                            scriptLines.value[currentIndex] = scriptLines.value[currentIndex - 1];
+                            scriptLines.value[currentIndex - 1] = temp;
+                        }
+                    }
+                    
+                    recalculateTimes();
+                };
+
+                const moveSelectedLinesDown = () => {
+                    console.log("Moving selected lines down");
+                    const selectedIndices = scriptLines.value
+                        .map((line, index) => line.selected ? index : -1)
+                        .filter(index => index !== -1)
+                        .sort((a, b) => b - a); // Sort indices in descending order
+
+                    if (selectedIndices.length === 0 || selectedIndices[selectedIndices.length - 1] >= scriptLines.value.length - 1) {
+                        return; // Can't move down if no lines selected or already at the bottom
+                    }
+
+                    // Move each selected line down one position
+                    for (let i = 0; i < selectedIndices.length; i++) {
+                        const currentIndex = selectedIndices[i];
+                        if (currentIndex < scriptLines.value.length - 1 && !scriptLines.value[currentIndex + 1].selected) {
+                            // Only swap if the line below is not selected
+                            const temp = scriptLines.value[currentIndex];
+                            scriptLines.value[currentIndex] = scriptLines.value[currentIndex + 1];
+                            scriptLines.value[currentIndex + 1] = temp;
+                        }
+                    }
+                    
+                    recalculateTimes();
+                };
+
+                const handleShiftI = (event) => {
+                    // Check if Shift+I was pressed
+                    if (event.shiftKey && event.key === 'I') {
+                        const selectedIndex = scriptLines.value.findIndex(line => line.selected);
+                        if (selectedIndex !== -1) {
+                            addScriptLine();
+                        }
+                    }
+                };
+
+                const handleKeyboardShortcuts = (event) => {
+                    console.log(`Key pressed: ${event.key}, Ctrl: ${event.ctrlKey}, Alt: ${event.altKey}, Shift: ${event.shiftKey}`);
+                    
+                    // Delete key shortcut for removing selected lines
+                    if (event.key === 'Delete') {
+                        const hasSelectedLines = scriptLines.value.some(line => line.selected);
+                        if (hasSelectedLines) {
+                            confirmDeleteLine();
+                        }
+                    }
+                    
+                    // Alt + Arrow shortcuts for moving lines
+                    if (event.altKey) {
+                        if (event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            moveSelectedLinesUp();
+                        } else if (event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            moveSelectedLinesDown();
+                        }
+                    }
+                    
+                    // Shift+I shortcut for adding a new line
+                    if (event.shiftKey && (event.key === 'i' || event.key === 'I')) {
+                        console.log("Shift+I detected - adding new line");
+                        addScriptLine();
+                    }
+                    
+                    // Ctrl+I shortcut for adding a new line after the selected line
+                    if (event.ctrlKey && (event.key === 'i' || event.key === 'I')) {
+                        console.log("Ctrl+I detected - inserting line after selected");
+                        event.preventDefault(); // Prevent browser's italic shortcut
+                        insertLineAfterSelected();
+                    }
+                };
+
+                const confirmDeleteLine = () => {
+                    showDeleteConfirm.value = true;
+                    event.stopPropagation();
+                };
+                
+                const loadMomentOptions = async () => {
+                    try {
+                        console.log("Loading moment options...");
+                        
+                        // Define the base ID for Airtable schema
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        
+                        // First, try to load directly from the table metadata
+                        const url = `https://api.airtable.com/v0/meta/bases/${baseId}/tables`;
+                        
+                        // Make the API request with proper authorization
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            } 
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`Airtable API error: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log("Table metadata:", data);
+                        
+                        // Find the table and field we're looking for
+                        const table = data.tables.find(t => t.id === 'tbliRcyIlg0feNW3J');
+                        if (table) {
+                            const momentField = table.fields.find(f => f.id === 'fldniXeuy8hlTgN5Y');
+                            if (momentField && momentField.type === 'singleSelect' && momentField.options && momentField.options.choices) {
+                                momentOptions.value = momentField.options.choices;
+                                console.log('Loaded moment options from metadata:', momentOptions.value);
+                            } else {
+                                console.error('Moment field not found or not configured correctly:', momentField);
+                                
+                                // Fallback: use a hardcoded list of common moment options for testing
+                                momentOptions.value = [
+                                    { id: 'opt1', name: 'Pré-Jogo', color: 'blue' },
+                                    { id: 'opt2', name: 'Primeiro Tempo', color: 'green' },
+                                    { id: 'opt3', name: 'Intervalo', color: 'orange' },
+                                    { id: 'opt4', name: 'Segundo Tempo', color: 'red' },
+                                    { id: 'opt5', name: 'Pós-Jogo', color: 'purple' }
+                                ];
+                                console.log('Using fallback moment options:', momentOptions.value);
+                            }
+                        } else {
+                            console.error('Table not found in Airtable schema');
+                            
+                            // Fallback: use a hardcoded list of common moment options for testing
+                            momentOptions.value = [
+                                { id: 'opt1', name: 'Pré-Jogo', color: 'blue' },
+                                { id: 'opt2', name: 'Primeiro Tempo', color: 'green' },
+                                { id: 'opt3', name: 'Intervalo', color: 'orange' },
+                                { id: 'opt4', name: 'Segundo Tempo', color: 'red' },
+                                { id: 'opt5', name: 'Pós-Jogo', color: 'purple' }
+                            ];
+                            console.log('Using fallback moment options:', momentOptions.value);
+                        }
+                        
+                        return momentOptions.value;
+                    } catch (error) {
+                        console.error('Error loading moment options:', error);
+                        
+                        // Fallback: use a hardcoded list if all else fails
+                        momentOptions.value = [
+                            { id: 'opt1', name: 'Pré-Jogo', color: 'blue' },
+                            { id: 'opt2', name: 'Primeiro Tempo', color: 'green' },
+                            { id: 'opt3', name: 'Intervalo', color: 'orange' },
+                            { id: 'opt4', name: 'Segundo Tempo', color: 'red' },
+                            { id: 'opt5', name: 'Pós-Jogo', color: 'purple' }
+                        ];
+                        console.log('Using fallback moment options after error:', momentOptions.value);
+                        return momentOptions.value;
+                    }
+                };                
+                
+                const updateMoment = async () => {
+                    if (!currentLine.value || !currentLine.value.airtableId) return;
+                    
+                    try {
+                        // Define the base ID and table ID for Espelho items
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        const tableId = 'tbliRcyIlg0feNW3J';
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${currentLine.value.airtableId}`;
+                        
+                        // Make the API request with proper authorization
+                        const response = await fetch(url, {
+                            method: 'PATCH',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                fields: {
+                                    'fldniXeuy8hlTgN5Y': currentLine.value.moment
+                                }
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`Airtable API error: ${response.status}`);
+                        }
+                        
+                        // Update the script line in the local array
+                        if (currentLineIndex.value !== -1) {
+                            scriptLines.value[currentLineIndex.value].moment = currentLine.value.moment;
+                        }
+                        
+                        // Sort script lines after updating moment
+                        sortScriptLinesByMoment();
+                        
+                        console.log(`Updated Airtable record ${currentLine.value.airtableId} with moment: "${currentLine.value.moment}"`);
+                    } catch (error) {
+                        console.error('Error updating moment in Airtable:', error);
+                    }
+                };
+
+                const deleteConfirmed = () => {
+                    removeScriptLine(currentLineIndex.value);
+                    event.stopPropagation();
+                };
+                
+                // Function to move to next line
+                const moveToNextLine = () => {
+                    if (isRunning.value && currentLineIndex.value < scriptLines.value.length - 1) {
+                        // Antes de mover para a próxima linha, calcular a diferença entre duration e current time
+                        if (currentLineIndex.value >= 0 && scriptLines.value[currentLineIndex.value]) {
+                            const currentLine = scriptLines.value[currentLineIndex.value];
+                            
+                            // Obter duração planejada (em segundos)
+                            const durationParts = currentLine.duration.split(':').map(Number);
+                            const plannedSeconds = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
+                            
+                            // Obter tempo real gasto (em segundos)
+                            const actualSeconds = window.lineSeconds || 0;
+                            
+                            // Calcular a diferença (positivo se ficou abaixo do tempo, negativo se excedeu)
+                            const secondsDifference = plannedSeconds - actualSeconds;
+                            
+                            console.log(`Linha ${currentLineIndex.value}: Tempo planejado: ${plannedSeconds}s, Tempo real: ${actualSeconds}s, Diferença: ${secondsDifference}s`);
+                            
+                            // Atualizar overflow com esta diferença
+                            calculateOverflowAdjustment(secondsDifference);
+                            
+                            // Salvar o tempo atual da linha sendo deixada
+                            const currentTimeValue = formatTimeWithHours(
+                                Math.floor(actualSeconds / 3600), 
+                                Math.floor((actualSeconds % 3600) / 60), 
+                                actualSeconds % 60
+                            );
+                            
+                            // Atualizar o tempo atual na linha
+                            currentLine.currentTime = currentTimeValue;
+                            
+                            // Verificar se a atualização no Airtable já foi solicitada pelo broadcastKeyHandler
+                            // Se não foi, fazemos isso aqui para garantir
+                            if (currentLine.airtableId && !currentLine.airtableCurrentTimeUpdating) {
+                                // Marcar que estamos atualizando para evitar requisições duplicadas
+                                currentLine.airtableCurrentTimeUpdating = true;
+                                
+                                console.log(`[moveToNextLine] Atualizando tempo no Airtable para linha ${currentLineIndex.value}: ${currentTimeValue}`);
+                                
+                                setTimeout(() => {
+                                    updateAirtableCurrentTime(currentLineIndex.value, currentTimeValue)
+                                        .then(() => {
+                                            currentLine.airtableCurrentTimeUpdated = true;
+                                            currentLine.airtableCurrentTimeUpdating = false;
+                                        })
+                                        .catch(error => {
+                                            console.error(`Erro ao atualizar tempo no Airtable:`, error);
+                                            currentLine.airtableCurrentTimeUpdating = false;
+                                        });
+                                }, 100);
+                            }
+                        }
+                        
+                        // Continuar com o movimento para a próxima linha
+                        currentLineIndex.value++;
+                        // Reset line timer
+                        currentLineRuntime.value = '00:00:00';
+                        window.lineSeconds = 0;
+                    }
+                };
+
+                const isLineOvertime = (index) => {
+                    if (!scriptLines.value[index] || !scriptLines.value[index].currentTime || !scriptLines.value[index].duration) {
+                        return false;
+                    }
+                    
+                    // Parse duration (MM:SS)
+                    const durationParts = scriptLines.value[index].duration.split(':').map(Number);
+                    const plannedSeconds = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
+                    
+                    // Parse current time (HH:MM:SS)
+                    const timeParts = scriptLines.value[index].currentTime.split(':').map(Number);
+                    const actualSeconds = (timeParts[0] || 0) * 3600 + (timeParts[1] || 0) * 60 + (timeParts[2] || 0);
+                    return actualSeconds > plannedSeconds;
+                };
+                const calculateOverflowAdjustment = (secondsToAdjust) => {
+                    // Parse current overflow time
+                    const overflowParts = overflowTime.value.split(':').map(Number);
+                    let overflowHours = overflowParts[0] || 0;
+                    let overflowMinutes = overflowParts[1] || 0;
+                    let overflowSeconds = overflowParts[2] || 0;
+                    
+                    // Convert to total seconds
+                    let totalOverflowSeconds = overflowHours * 3600 + overflowMinutes * 60 + overflowSeconds;
+                    
+                    // Adjust by the difference (positive if under time, negative if over time)
+                    totalOverflowSeconds += secondsToAdjust;
+                    
+                    // Update overflow status
+                    isOverflowPositive.value = totalOverflowSeconds >= 0;
+                    
+                    // Format back to HH:MM:SS
+                    const absSeconds = Math.abs(totalOverflowSeconds);
+                    overflowTime.value = formatTimeWithHours(Math.floor(absSeconds / 3600), Math.floor((absSeconds % 3600) / 60), absSeconds % 60);
+                };
+
+                // Simplified function to check if a moment header should be shown
+                const shouldShowGroupHeader = (index) => {
+                    try {
+                        // Get current line's moment, standardize empty values
+                        const currentMoment = scriptLines.value[index]?.moment || '';
+                        
+                        // If it's the first line, always show header
+                        if (index === 0) return true;
+                        
+                        // Get the previous line's moment, standardize empty values
+                        const previousMoment = scriptLines.value[index - 1]?.moment || '';
+                        
+                        // Compare the standardized values
+                        return currentMoment !== previousMoment;
+                    } catch (error) {
+                        console.error(`Error in shouldShowGroupHeader for index ${index}:`, error);
+                        return false;
+                    }
+                };
+
+                const recalculateTimes = () => {
+                    // Parse start time
+                    const timeParts = startTime.value.split(':').map(Number);
+                    let startHours = 0, startMinutes = 0, startSeconds = 0;
+                    
+                    if (timeParts.length >= 2) {
+                        [startHours, startMinutes] = timeParts;
+                        startSeconds = timeParts[2] || 0;
+                    }
+                    let currentHours = startHours;
+                    let currentMinutes = startMinutes;
+                    let currentSeconds = startSeconds;
+                    
+                    scriptLines.value.forEach(line => {
+                        // Calculate time for this line
+                        line.calculatedTime = formatTimeWithHours(currentHours, currentMinutes, currentSeconds);
+                        
+                        // Parse duration (MM:SS)
+                        const durationParts = line.duration && typeof line.duration === 'string' ? line.duration.split(':') : ['0', '0'];
+                        if (durationParts.length === 2) {
+                            const durationMinutes = parseInt(durationParts[0]) || 0;
+                            const durationSeconds = parseInt(durationParts[1]) || 0;
+                            
+                            // Add duration to current time
+                            currentSeconds += durationSeconds;
+                            currentMinutes += durationMinutes + Math.floor(currentSeconds / 60);
+                            currentSeconds %= 60;
+                            currentHours += Math.floor(currentMinutes / 60);
+                            currentMinutes %= 60;
+                        }
+                    });
+                    
+                    // Calculate total duration
+                    const totalHours = currentHours - startHours;
+                    const totalMinutes = currentMinutes - startMinutes;
+                    const totalSeconds = currentSeconds - startSeconds;
+                    
+                    // Handle negative values due to time wrapping
+                    let adjustedHours = totalHours;
+                    let adjustedMinutes = totalMinutes;
+                    let adjustedSeconds = totalSeconds;
+                    
+                    if (adjustedSeconds < 0) {
+                        adjustedSeconds += 60;
+                        adjustedMinutes -= 1;
+                    }
+                    
+                    if (adjustedMinutes < 0) {
+                        adjustedMinutes += 60;
+                        adjustedHours -= 1;
+                    }
+                    
+                    // Ensure we never have negative values
+                    adjustedHours = Math.max(0, adjustedHours);
+                    adjustedMinutes = Math.max(0, adjustedMinutes);
+                    adjustedSeconds = Math.max(0, adjustedSeconds);
+                    
+                    calculatedTotalDuration.value = formatTimeWithHours(adjustedHours, adjustedMinutes, adjustedSeconds);
+                    
+                    // Calculate overflow time
+                    calculateOverflow();
+                };
+                
+                const calculateOverflow = () => {
+                    // Parse total duration
+                    const totalParts = totalDuration.value.split(':').map(Number);
+                    let totalHours = 0, totalMinutes = 0, totalSeconds = 0;
+                    
+                    if (totalParts.length >= 2) {
+                        [totalHours, totalMinutes] = totalParts;
+                        totalSeconds = totalParts[2] || 0;
+                    }
+                    
+                    // Parse calculated duration
+                    const calcParts = calculatedTotalDuration.value.split(':').map(Number);
+                    let calcHours = 0, calcMinutes = 0, calcSeconds = 0;
+                    
+                    if (calcParts.length >= 2) {
+                        [calcHours, calcMinutes] = calcParts;
+                        calcSeconds = calcParts[2] || 0;
+                    }
+                    
+                    // Convert both to seconds and find difference
+                    const totalInSeconds = totalHours * 3600 + totalMinutes * 60 + totalSeconds;
+                    const calcInSeconds = calcHours * 3600 + calcMinutes * 60 + calcSeconds;
+                    const diffInSeconds = totalInSeconds - calcInSeconds;
+                    
+                    isOverflowPositive.value = diffInSeconds >= 0;
+                    overflowTime.value = formatTimeWithHours(Math.floor(Math.abs(diffInSeconds) / 3600), Math.floor((Math.abs(diffInSeconds) % 3600) / 60), Math.abs(diffInSeconds) % 60);
+                    
+                    console.log(`Overflow calculated: ${overflowTime.value} (${isOverflowPositive.value ? 'positive' : 'negative'})`);
+                };
+
+                const formatTimeWithHours = (hours, minutes, seconds) => {
+                    // Ensure all values are non-negative integers
+                    hours = Math.max(0, Math.floor(hours));
+                    minutes = Math.max(0, Math.floor(minutes));
+                    seconds = Math.max(0, Math.floor(seconds));
+                    
+                    // Format with padding
+                    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                };
+
+                const generateScript = async () => {
+                    try {
+                        const processedInput = await scriptEditor.value.getProcessedContent(scriptContent.value);
+                        const stream = await SDK.ai.streamText({
+                            model: "anthropic:claude-3-5-sonnet-latest",
+                            messages: [{
+                                role: "user",
+                                content: "Generate a professional TV script based on this input: " + processedInput
+                            }]
+                        });
+
+                        let generatedText = '';
+                        for await (const chunk of stream) {
+                            generatedText += chunk.text;
+                        }
+                        scriptContent.value = generatedText;
+                    } catch (error) {
+                        throw error;
+                    }
+                };
+
+                const saveScript = () => {
+                    // Implement save functionality
+                    console.log('Saving script:', scriptContent.value);
+                };
+
+                const openLineDetails = (index) => {
+                    currentLine.value = scriptLines.value[index];
+                    showLineDetails.value = true;
+                    currentLineIndex.value = index; 
+                    loadMomentOptions().then(() => console.log('Current moment value:', currentLine.value ? currentLine.value.moment : 'No moment value')); // Load moment options when opening details
+                    event.stopPropagation();
+                };
+
+                const stopBroadcast = () => {
+                    isRunning.value = false;
+                    
+                    // Limpar o intervalo do timer
+                    if (window.broadcastInterval) {
+                        clearInterval(window.broadcastInterval);
+                    }
+                    
+                    // Remover o event listener de teclado
+                    if (window.broadcastKeyHandler) {
+                        console.log('Removendo broadcastKeyHandler no stopBroadcast');
+                        document.removeEventListener('keydown', window.broadcastKeyHandler);
+                        // Limpar a referência para evitar chamadas residuais
+                        window.broadcastKeyHandler = null;
+                    }
+                    
+                    // Remover a classe de fundo escuro
+                    document.body.classList.remove('bg-gray-800');
+                };
+
+                const confirmBroadcast = () => {
+                    showBroadcastConfirm.value = true;
+                    event.stopPropagation();
+                };
+
+                // Variables to track current group timing
+                const currentGroupRemainingTime = ref('00:00:00');
+                const isCurrentGroupOvertime = ref(false);
+                
+                // Function to get the current group name based on the current line index
+                const getCurrentGroupName = () => {
+                    if (currentLineIndex.value < 0 || currentLineIndex.value >= scriptLines.value.length) {
+                        return 'Ungrouped';
+                    }
+                    return scriptLines.value[currentLineIndex.value].moment || 'Ungrouped';
+                };
+                
+                // Function to get seconds from HH:MM:SS format
+                const getSecondsFromTime = (timeStr) => {
+                    const parts = timeStr.split(':').map(Number);
+                    if (parts.length === 3) {
+                        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                    } else if (parts.length === 2) {
+                        return parts[0] * 60 + parts[1];
+                    }
+                    return 0;
+                };
+                
+                // Modified startBroadcast function to include group timer
+                const startBroadcast = () => {
+                    isRunning.value = true;
+                    currentLineIndex.value = 0; // Always start with the first line
+                    document.body.classList.add('bg-gray-800'); // Add dark background when starting
+                    
+                    // Reset timers and start broadcast
+                    currentLineRuntime.value = '00:00:00';
+                    
+                    // Inicialize o cronômetro de grupo com o valor calculado em vez do valor total
+                    const currentGroup = getCurrentGroupName();
+                    window.groupTotalSeconds = getSecondsFromTime(calculateGroupDuration(currentGroup));
+                    window.groupSpentSeconds = 0;
+                    
+                    // Inicializa cronômetro regressivo com o tempo total calculado
+                    const remainingSeconds = window.groupTotalSeconds;
+                    currentGroupRemainingTime.value = formatTimeWithHours(
+                        Math.floor(remainingSeconds / 3600),
+                        Math.floor((remainingSeconds % 3600) / 60),
+                        remainingSeconds % 60
+                    );
+                    
+                    let showSeconds = 0;
+                    window.lineSeconds = 0; // Make lineSeconds accessible globally
+                    
+                    // Update timers every second
+                    const timerInterval = setInterval(() => {
+                        if (!isRunning.value) {
+                            clearInterval(timerInterval);
+                            return;
+                        }
+                        
+                        showSeconds++;
+                        window.lineSeconds++;
+                        window.groupSpentSeconds++;
+                        
+                        showRuntime.value = formatTimeWithHours(
+                            Math.floor(showSeconds / 3600), 
+                            Math.floor((showSeconds % 3600) / 60), 
+                            showSeconds % 60
+                        );
+                        currentLineRuntime.value = formatTimeWithHours(
+                            Math.floor(window.lineSeconds / 3600), 
+                            Math.floor((window.lineSeconds % 3600) / 60), 
+                            window.lineSeconds % 60
+                        );
+                        
+                        // Update group countdown timer
+                        const remainingSeconds = window.groupTotalSeconds - window.groupSpentSeconds;
+                        isCurrentGroupOvertime.value = remainingSeconds < 0;
+                        
+                        // Format the remaining time
+                        const absSeconds = Math.abs(remainingSeconds);
+                        currentGroupRemainingTime.value = formatTimeWithHours(
+                            Math.floor(absSeconds / 3600),
+                            Math.floor((absSeconds % 3600) / 60),
+                            absSeconds % 60
+                        );
+                        
+                        // Add a minus sign if overtime
+                        if (isCurrentGroupOvertime.value) {
+                            currentGroupRemainingTime.value = '-' + currentGroupRemainingTime.value;
+                        }
+                        
+                        // Check if current line is overtime
+                        if (currentLineIndex.value < scriptLines.value.length) {
+                            const currentLine = scriptLines.value[currentLineIndex.value];
+                            const durationParts = currentLine.duration && typeof currentLine.duration === 'string' 
+                                ? currentLine.duration.split(':').map(Number) 
+                                : [0, 0];
+                            const plannedSeconds = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
+                            
+                            // Set overtime flag if current line runtime exceeds planned duration
+                            isCurrentLineOvertime.value = window.lineSeconds > plannedSeconds;
+                            
+                            // Update currentTime with the actual elapsed time
+                            currentLine.currentTime = formatTimeWithHours(
+                                Math.floor(window.lineSeconds / 3600), 
+                                Math.floor((window.lineSeconds % 3600) / 60), 
+                                window.lineSeconds % 60
+                            );
+                        }
+                    }, 1000);
+                    
+                    // Store the interval ID to clear it later
+                    window.broadcastInterval = timerInterval;
+                    
+                    // Remover quaisquer event listeners existentes para evitar duplicação
+                    if (window.broadcastKeyHandler) {
+                        document.removeEventListener('keydown', window.broadcastKeyHandler);
+                    }
+                    
+                    // Create keydown handler for broadcast
+                    window.broadcastKeyHandler = function(event) {
+                        if (event.key === 'Enter' && isRunning.value) {
+                            // Handle line advancement with Enter key
+                            event.preventDefault();
+                            
+                            console.log(`[BROADCAST KEY HANDLER] Tecla Enter detectada - isRunning: ${isRunning.value}, Linha atual: ${currentLineIndex.value}`);
+
+                            // Store previous group for comparison
+                            const previousGroup = getCurrentGroupName();
+                            
+                            // Salvar o tempo atual antes de processar qualquer mudança de linha
+                            if (currentLineIndex.value >= 0 && currentLineIndex.value < scriptLines.value.length) {
+                                const currentLine = scriptLines.value[currentLineIndex.value];
+                                
+                                // Calcular o tempo atual em formato HH:MM:SS
+                                const currentTimeValue = formatTimeWithHours(
+                                    Math.floor(window.lineSeconds / 3600), 
+                                    Math.floor((window.lineSeconds % 3600) / 60), 
+                                    window.lineSeconds % 60
+                                );
+                                
+                                // Atualizar o valor na linha
+                                currentLine.currentTime = currentTimeValue;
+                                currentLine.airtableCurrentTimeUpdated = false; // Resetar para garantir atualização
+                                
+                                console.log(`[BROADCAST KEY HANDLER] Salvando tempo atual da linha ${currentLineIndex.value}: ${currentTimeValue}`);
+                                
+                                // Atualizar no Airtable
+                                if (currentLine.airtableId && !currentLine.airtableCurrentTimeUpdating) {
+                                    // Marcar que estamos atualizando para evitar duplicação
+                                    currentLine.airtableCurrentTimeUpdating = true;
+                                    
+                                    setTimeout(() => {
+                                        updateAirtableCurrentTime(currentLineIndex.value, currentTimeValue)
+                                            .then(result => {
+                                                if (result) {
+                                                    console.log(`[BROADCAST KEY HANDLER] Tempo atualizado com sucesso no Airtable`);
+                                                    currentLine.airtableCurrentTimeUpdated = true;
+                                                }
+                                                currentLine.airtableCurrentTimeUpdating = false;
+                                            })
+                                            .catch(error => {
+                                                console.error(`[BROADCAST KEY HANDLER] Erro ao atualizar tempo no Airtable:`, error);
+                                                currentLine.airtableCurrentTimeUpdating = false;
+                                            });
+                                    }, 100);
+                                }
+                            }
+                            
+                            // Check if Shift key is pressed for moving back
+                            if (event.shiftKey) {
+                                // Move back to previous line
+                                if (currentLineIndex.value > 0) {
+                                    // Antes de voltar, resetamos o tempo da linha atual
+                                    const currentLine = scriptLines.value[currentLineIndex.value];
+                                    if (currentLine) {
+                                        // Ajustar o overflow com o tempo que não foi usado nesta linha
+                                        const durationParts = currentLine.duration.split(':').map(Number);
+                                        const plannedSeconds = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
+                                        
+                                        // Se estamos voltando, adicione todo o tempo planejado, pois não o usamos
+                                        calculateOverflowAdjustment(plannedSeconds);
+                                    }
+                                    
+                                    // Reset the current time for the current line
+                                    currentLineRuntime.value = '00:00:00';
+                                    currentLineIndex.value--;
+                                    window.lineSeconds = 0;
+                                }
+                            } else {
+                                // Move to next line - já incorpora o cálculo de overflow
+                                moveToNextLine();
+                            }
+
+                            // Check if group changed
+                            const currentGroup = getCurrentGroupName();
+                            if (currentGroup !== previousGroup) {
+                                console.log(`Group changed from ${previousGroup} to ${currentGroup}`);
+                                
+                                // Reset line timer for the new line
+                                window.lineSeconds = 0;
+                                
+                                // Reset and recalculate group timers for the new group
+                                window.groupTotalSeconds = getSecondsFromTime(calculateGroupDuration(currentGroup));
+                                window.groupSpentSeconds = 0;
+                            }
+                        }
+                        if (event.key === 'Escape') {
+                            // Emergency escape for modals
+                            showBroadcastConfirm.value = false;
+                        }
+                    };
+                    
+                    // Add keyboard handler
+                    document.addEventListener('keydown', window.broadcastKeyHandler);
+                };
+
+                // Emergency Reset Function
+                const emergencyReset = () => {
+                    // Close all modals
+                    showBroadcastConfirm.value = false;
+                    showLineDetails.value = false;
+                    showDeleteConfirm.value = false;
+                    
+                    // Stop broadcasting if it's running
+                    if (isRunning.value) {
+                        isRunning.value = false;
+                        
+                        // Limpar o intervalo do timer
+                        if (window.broadcastInterval) {
+                            clearInterval(window.broadcastInterval);
+                            window.broadcastInterval = null;
+                        }
+                        
+                        // Remove event listeners
+                        if (window.broadcastKeyHandler) {
+                            console.log('Removendo broadcastKeyHandler no emergencyReset');
+                            document.removeEventListener('keydown', window.broadcastKeyHandler);
+                            window.broadcastKeyHandler = null;
+                        }
+                        
+                        document.body.classList.remove('bg-gray-800');
+                    }
+                    
+                    // Reset UI state
+                    currentLineIndex.value = 0;
+                    showRuntime.value = '00:00:00';
+                    currentLineRuntime.value = '00:00:00';
+                    window.lineSeconds = 0;
+                    
+                    alert('A aplicação foi reiniciada em modo de emergência. Selecione a matriz novamente para recarregar os dados.');
+                };
+
+                const handleClickOutside = (event) => {
+                    if (!event.target.closest('input[type="checkbox"]')) {
+                        scriptLines.value.forEach(line => line.selected = false);
+                    }
+                };
+
+                // Function to get color for a type value
+                const getTypeColor = (typeName) => {
+                    if (!typeName) return '#ffffff'; // Default white background for empty type
+                    
+                    const typeOption = typeOptions.value.find(option => option.name === typeName);
+                    if (!typeOption || !typeOption.color) return '#ffffff';
+                    
+                    // Convert Airtable color name to actual CSS color
+                    return convertAirtableColorToCSS(typeOption.color);
+                };
+                
+                // Convert Airtable color names to actual CSS colors
+                const convertAirtableColorToCSS = (airtableColor) => {
+                    // Color mapping according to Airtable's color system
+                    const colorMap = {
+                        // Blue variations
+                        'blueLight2': '#d0e8ff',
+                        'blueLight1': '#a6d4ff',
+                        'blueBright': '#63a4ff',
+                        'blueDark1': '#3782ff',
+                        
+                        // Cyan variations
+                        'cyanLight2': '#d0f5ff',
+                        'cyanLight1': '#a6ebff',
+                        'cyanBright': '#4dddff',
+                        'cyanDark1': '#00c2ff',
+                        
+                        // Teal variations
+                        'tealLight2': '#c9f5eb',
+                        'tealLight1': '#a0ebe0',
+                        'tealBright': '#5ddbc1',
+                        'tealDark1': '#00c2a1',
+                        
+                        // Green variations
+                        'greenLight2': '#ddffce',
+                        'greenLight1': '#c2ffa1',
+                        'greenBright': '#87f260',
+                        'greenDark1': '#4dd33a',
+                        
+                        // Yellow variations
+                        'yellowLight2': '#fff9c2',
+                        'yellowLight1': '#fff384',
+                        'yellowBright': '#ffea2e',
+                        'yellowDark1': '#ffd506',
+                        
+                        // Orange variations
+                        'orangeLight2': '#ffe9cc',
+                        'orangeLight1': '#ffd599',
+                        'orangeBright': '#ffb452',
+                        'orangeDark1': '#ff9d26',
+                        
+                        // Red variations
+                        'redLight2': '#ffd9d9',
+                        'redLight1': '#ffb2b2',
+                        'redBright': '#ff8383',
+                        'redDark1': '#ff6a6a',
+                        
+                        // Pink variations
+                        'pinkLight2': '#ffd9e8',
+                        'pinkLight1': '#ffb2d2',
+                        'pinkBright': '#ff80b1',
+                        'pinkDark1': '#ff4d97',
+                        
+                        // Purple variations
+                        'purpleLight2': '#ecd9ff',
+                        'purpleLight1': '#dcb2ff',
+                        'purpleBright': '#c480ff',
+                        'purpleDark1': '#ac4dff',
+                        
+                        // Gray variations
+                        'grayLight2': '#e6e6e6',
+                        'grayLight1': '#cccccc',
+                        'grayBright': '#9a9a9a',
+                        'grayDark1': '#808080'
+                    };
+                    
+                    // Check if the color is a direct hex value (starts with #)
+                    if (airtableColor && airtableColor.startsWith('#')) {
+                        return airtableColor;
+                    }
+                    
+                    // Return the mapped CSS color or a default if not found
+                    return colorMap[airtableColor] || '#ffffff';
+                };
+                
+                // Function to get appropriate text color based on background color
+                const getTextColor = (typeName) => {
+                    const bgColor = getTypeColor(typeName);
+                    if (!bgColor) return 'black'; // Default text color
+                    
+                    return getContrastColor(bgColor);
+                };
+                
+                // Helper function to determine if a color is dark or light
+                const getContrastColor = (hexColor) => {
+                    if (!hexColor || hexColor === '') return 'black';
+                    
+                    // Remove the hash if it exists
+                    hexColor = hexColor.replace('#', '');
+                    
+                    // Convert to RGB
+                    const r = parseInt(hexColor.substr(0, 2), 16);
+                    const g = parseInt(hexColor.substr(2, 2), 16);
+                    const b = parseInt(hexColor.substr(4, 2), 16);
+                    
+                    // Calculate brightness (YIQ formula)
+                    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                    
+                    // Return white for dark colors, black for light colors
+                    return brightness > 128 ? 'black' : 'white';
+                };
+
+                // Function to load type options from Airtable
+                const loadTypeOptions = async () => {
+                    try {
+                        console.log("Loading type options...");
+                        
+                        // Define the base ID for Airtable schema
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        const tableId = 'tbliRcyIlg0feNW3J';
+                        const typeFieldId = 'fldjjGWagp4UoA2od';
+                        
+                        // First, try to load directly from the table metadata
+                        const url = `https://api.airtable.com/v0/meta/bases/${baseId}/tables`;
+                        
+                        // Make the API request with proper authorization
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            headers: { 
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                'Content-Type': 'application/json'
+                            } 
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`Airtable API error: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log("Table metadata for type options:", data);
+                        
+                        // Find the table and field we're looking for
+                        const table = data.tables.find(t => t.id === tableId);
+                        if (table) {
+                            const typeField = table.fields.find(f => f.id === typeFieldId);
+                            if (typeField && typeField.type === 'singleSelect' && typeField.options && typeField.options.choices) {
+                                // Process the choices to include color data
+                                typeOptions.value = typeField.options.choices;
+                                console.log('Loaded type options from metadata:', typeOptions.value);
+                                
+                                // Log color values for debugging
+                                typeOptions.value.forEach(option => {
+                                    const cssColor = convertAirtableColorToCSS(option.color);
+                                    console.log(`Type option: ${option.name}, Airtable color: ${option.color}, CSS color: ${cssColor}`);
+                                });
+                            } else {
+                                console.error('Type field not found or not configured correctly:', typeField);
+                                
+                                // Fallback: use some default type options
+                                typeOptions.value = [
+                                    { id: 'typ1', name: 'VT', color: 'redBright' },
+                                    { id: 'typ2', name: 'Ao vivo', color: 'greenBright' },
+                                    { id: 'typ3', name: 'Comentário', color: 'blueBright' },
+                                    { id: 'typ4', name: 'Intervalo', color: 'yellowBright' },
+                                    { id: 'typ5', name: 'Transição', color: 'purpleBright' }
+                                ];
+                                console.log('Using fallback type options:', typeOptions.value);
+                            }
+                        } else {
+                            console.error('Table not found in Airtable schema');
+                            
+                            // Fallback: use some default type options
+                            typeOptions.value = [
+                                { id: 'typ1', name: 'VT', color: 'redBright' },
+                                { id: 'typ2', name: 'Ao vivo', color: 'greenBright' },
+                                { id: 'typ3', name: 'Comentário', color: 'blueBright' },
+                                { id: 'typ4', name: 'Intervalo', color: 'yellowBright' },
+                                { id: 'typ5', name: 'Transição', color: 'purpleBright' }
+                            ];
+                            console.log('Using fallback type options:', typeOptions.value);
+                        }
+                        
+                        return typeOptions.value;
+                    } catch (error) {
+                        console.error('Error loading type options:', error);
+                        
+                        // Fallback: use some default type options with Airtable color names
+                        typeOptions.value = [
+                            { id: 'typ1', name: 'VT', color: 'redBright' },
+                            { id: 'typ2', name: 'Ao vivo', color: 'greenBright' },
+                            { id: 'typ3', name: 'Comentário', color: 'blueBright' },
+                            { id: 'typ4', name: 'Intervalo', color: 'yellowBright' },
+                            { id: 'typ5', name: 'Transição', color: 'purpleBright' }
+                        ];
+                        console.log('Using fallback type options after error:', typeOptions.value);
+                        return typeOptions.value;
+                    }
+                };
+
+                const updateAirtableType = async (lineIndex) => {
+                    const line = scriptLines.value[lineIndex];
+                    if (line && line.airtableId) {
+                        try {
+                            // Define the base ID and table ID for Espelho items
+                            const baseId = 'appdAaS1hPh5nHRxS'; 
+                            const tableId = 'tbliRcyIlg0feNW3J';
+                            const typeFieldId = 'fldjjGWagp4UoA2od';
+                            const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                            
+                            console.log(`Updating type for line ${lineIndex} to "${line.type}"`);
+                            
+                            // Make the API request with proper authorization
+                            const response = await fetch(url, {
+                                method: 'PATCH',
+                                headers: { 
+                                    'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    fields: {
+                                        [typeFieldId]: line.type
+                                    }
+                                })
+                            });
+                            
+                            if (!response.ok) {
+                                const errorText = await response.text();
+                                throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                            }
+                            
+                            console.log(`Updated Airtable record ${line.airtableId} with type: "${line.type}"`);
+                            line.airtableTypeUpdated = true;
+                        } catch (error) {
+                            console.error('Error updating Airtable type:', error);
+                        }
+                    }
+                };
+
+                // Substituir completamente a função para garantir que funcione corretamente
+                const updateAirtableCurrentTime = async (lineIndex, currentTimeValue) => {
+                    try {
+                        const line = scriptLines.value[lineIndex];
+                        if (!line || !line.airtableId) {
+                            console.error(`Não foi possível atualizar o Tempo Entregue: linha inválida ou sem airtableId`, {
+                                lineIndex,
+                                hasLine: !!line,
+                                airtableId: line ? line.airtableId : 'undefined'
+                            });
+                            return;
+                        }
+                        
+                        console.log(`[TEMPO ENTREGUE] Atualizando linha ${lineIndex} (ID: ${line.airtableId}) com valor "${currentTimeValue}"`);
+                        
+                        // Definições dos IDs
+                        const baseId = 'appdAaS1hPh5nHRxS'; 
+                        const tableId = 'tbliRcyIlg0feNW3J';
+                        const currentTimeFieldId = 'fldTqULyPGyRkBdef';
+                        
+                        // Montar a URL da API
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                        
+                        // Dados a serem enviados
+                        const data = {
+                            fields: {
+                                [currentTimeFieldId]: currentTimeValue
+                            }
+                        };
+                        
+                        console.log(`[TEMPO ENTREGUE] Enviando requisição para ${url}:`, data);
+                        
+                        // Criar uma promise com timeout para evitar bloqueios longos
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Timeout na atualização do Tempo Entregue')), 5000);
+                        });
+                        
+                        // Enviar a requisição com timeout
+                        const fetchPromise = fetch(url, {
+                            method: 'PATCH',
+                            headers: {
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143',
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(data)
+                        });
+                        
+                        // Usar Promise.race para implementar um timeout
+                        const response = await Promise.race([fetchPromise, timeoutPromise]);
+                        
+                        // Verificar se a resposta foi bem-sucedida
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`[TEMPO ENTREGUE] Erro na resposta da API:`, {
+                                status: response.status,
+                                statusText: response.statusText,
+                                error: errorText
+                            });
+                            throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                        }
+                        
+                        // Processar a resposta bem-sucedida
+                        const responseData = await response.json();
+                        console.log('[TEMPO ENTREGUE] Atualização bem-sucedida:', responseData);
+                        
+                        // Marcar que o tempo foi atualizado
+                        line.airtableCurrentTimeUpdated = true;
+                        
+                        return responseData;
+                    } catch (error) {
+                        console.error('[TEMPO ENTREGUE] Erro ao atualizar o tempo:', error);
+                        
+                        // Marcar que a atualização falhou, para que possamos tentar novamente mais tarde
+                        const line = scriptLines.value[lineIndex];
+                        if (line) {
+                            line.airtableCurrentTimeUpdated = false;
+                        }
+                        
+                        return null;
+                    }
+                };
+
+                onMounted(async () => {
+                    try {
+                        isLoading.value = true;
+                        console.log("Application mounting...");
+                        
+                        // Remove any existing event listeners first
+                        document.removeEventListener('keydown', handleKeyboardShortcuts);
+                        document.removeEventListener('keydown', handleKeyDown);
+                        
+                        // Add only the keyboard shortcuts handler, not the handleKeyDown
+                        // handleKeyDown será chamado apenas pelo broadcastKeyHandler
+                        document.addEventListener('keydown', handleKeyboardShortcuts);
+                        
+                        // Comentários para deixar claro o comportamento esperado
+                        // O handleKeyDown NÃO deve ser adicionado globalmente,
+                        // ele só deve ser chamado pelo broadcastKeyHandler quando necessário
+                        
+                        // Load type options and moment options in parallel
+                        await Promise.allSettled([
+                            loadMomentOptions().catch(error => {
+                                console.error("Error loading moment options:", error);
+                                // Use fallback options
+                                momentOptions.value = [
+                                    { id: 'opt1', name: 'Pré-Jogo', color: 'blue' },
+                                    { id: 'opt2', name: 'Primeiro Tempo', color: 'green' },
+                                    { id: 'opt3', name: 'Intervalo', color: 'orange' },
+                                    { id: 'opt4', name: 'Segundo Tempo', color: 'red' },
+                                    { id: 'opt5', name: 'Pós-Jogo', color: 'purple' }
+                                ];
+                            }),
+                            loadTypeOptions().catch(error => {
+                                console.error("Error loading type options:", error);
+                                // Use fallback options
+                                typeOptions.value = [
+                                    { id: 'typ1', name: 'VT', color: 'redBright' },
+                                    { id: 'typ2', name: 'Ao vivo', color: 'greenBright' },
+                                    { id: 'typ3', name: 'Comentário', color: 'blueBright' },
+                                    { id: 'typ4', name: 'Intervalo', color: 'yellowBright' },
+                                    { id: 'typ5', name: 'Transição', color: 'purpleBright' }
+                                ];
+                            })
+                        ]);
+                        
+                        console.log("Options loaded, initializing Airtable...");
+                        
+                        // Then initialize Airtable data - use try/catch to continue even if this fails
+                        try {
+                    await initAirtable();
+                            console.log("Airtable initialization complete");
+                        } catch (error) {
+                            console.error("Error initializing Airtable:", error);
+                            // Continue even if Airtable fails
+                            matrizes.value = [{ id: 'error', fields: { MatchID: 'Error loading data' } }];
+                            selectedMatriz.value = 'error';
+                            isLoading.value = false;
+                        }
+                        
+                        // Initialize showTypeDropdown property for all script lines
+                        scriptLines.value.forEach(line => {
+                            if (line.showTypeDropdown === undefined) {
+                                Vue.set(line, 'showTypeDropdown', false);
+                            }
+                        });
+                        
+                        // Set up event listeners
+                    document.addEventListener('click', handleClickOutside);
+                        // Remove the duplicate keyboard event listener that might be causing issues
+                        // document.addEventListener('keydown', handleKeyboardShortcuts);
+                        
+                        // Run initial calculations
+                    recalculateTimes();
+                        
+                        isLoading.value = false;
+                        console.log("Application mounted successfully");
+                    } catch (error) {
+                        console.error('Error during initialization:', error);
+                        isLoading.value = false;
+                        
+                        // Ensure the application doesn't stay in loading state
+                        setTimeout(() => {
+                            isLoading.value = false;
+                        }, 2000);
+                    }
+                });
+
+                // Simplified watch for selected matriz
+                Vue.watch(selectedMatriz, () => {
+                    console.log("Matriz watcher triggered");
+                    // Use handleMatrizChange which will handle both updating and saving
+                    handleMatrizChange().catch(error => {
+                        console.error("Error in matriz watcher:", error);
+                    });
+                });
+                
+                // Watch for changes in totalDuration to update overflow
+                Vue.watch(totalDuration, (newValue, oldValue) => {
+                    if (newValue !== oldValue) {
+                        calculateOverflow();
+                    }
+                });
+                
+                // New function to handle matriz change with data saving
+                const handleMatrizChange = async () => {
+                    console.log("Matriz changed to:", selectedMatriz.value);
+                    
+                    try {
+                        // If there are unsaved changes, save them first
+                        if (hasUnsavedChanges.value) {
+                            await saveAllChangesToAirtable();
+                        }
+                        
+                        // Then load the selected matriz
+                    watchSelectedMatriz();
+                        await fetchEspelhoItems();
+                        
+                        // Reset unsaved changes flag
+                        hasUnsavedChanges.value = false;
+                    } catch (error) {
+                        console.error("Error during matriz change:", error);
+                        // Continue loading the new matriz even if saving failed
+                        watchSelectedMatriz();
+                        await fetchEspelhoItems();
+                    }
+                };
+                
+                // New function to track if there are unsaved changes
+                const hasUnsavedChanges = ref(false);
+                
+                // New function to save all current script lines to Airtable
+                const saveAllChangesToAirtable = async () => {
+                    console.log("Saving all changes to Airtable...");
+                    
+                    // Show loading indicator
+                    const tempIsLoading = isLoading.value;
+                    isLoading.value = true;
+                    
+                    try {
+                        // Process each script line
+                        const savePromises = scriptLines.value.map(async (line, index) => {
+                            if (!line.airtableId) return; // Skip lines without Airtable ID
+                            
+                            try {
+                                // Create a record of fields to update
+                                const fieldsToUpdate = {};
+                                
+                                // Only update fields that have changed
+                                if (!line.airtableUpdated) {
+                                    fieldsToUpdate['fldfqskGJlUlyN3y4'] = line.content;
+                                }
+                                
+                                if (!line.airtableDurationUpdated) {
+                                    // Duration field - convert MM:SS to seconds
+                                    const durationParts = line.duration.split(':');
+                                    if (durationParts.length === 2) {
+                                        const minutes = parseInt(durationParts[0]) || 0;
+                                        const seconds = parseInt(durationParts[1]) || 0;
+                                        const durationInSeconds = minutes * 60 + seconds;
+                                        fieldsToUpdate['fldHXLEnnwgTtIEkY'] = durationInSeconds;
+                                    }
+                                }
+                                
+                                if (!line.airtableTypeUpdated) {
+                                    fieldsToUpdate['fldjjGWagp4UoA2od'] = line.type;
+                                }
+                                
+                                if (!line.airtableCurrentTimeUpdated && line.currentTime) {
+                                    fieldsToUpdate['fldTqULyPGyRkBdef'] = line.currentTime;
+                                }
+                                
+                                // Moment field
+                                fieldsToUpdate['fldniXeuy8hlTgN5Y'] = line.moment;
+                                
+                                // Skip if no fields to update
+                                if (Object.keys(fieldsToUpdate).length === 0) {
+                                    return;
+                                }
+                                
+                                // Define the base ID and table ID for Espelho items
+                                const baseId = 'appdAaS1hPh5nHRxS'; 
+                                const tableId = 'tbliRcyIlg0feNW3J';
+                                const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                                
+                                // Create a timeout promise
+                                const timeoutPromise = new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('Request timeout')), 5000);
+                                });
+                                
+                                // Make the API request with proper authorization
+                                const fetchPromise = fetch(url, {
+                                    method: 'PATCH',
+                                    headers: { 
+                                        'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143', 
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: JSON.stringify({
+                                        fields: fieldsToUpdate
+                                    })
+                                });
+                                
+                                // Race the fetch against a timeout
+                                const response = await Promise.race([fetchPromise, timeoutPromise])
+                                    .catch(error => {
+                                        console.error(`Network error updating line ${index}:`, error);
+                                        throw error;
+                                    });
+                                
+                                if (!response.ok) {
+                                    const errorText = await response.text();
+                                    throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                                }
+                                
+                                console.log(`Successfully updated Airtable record ${line.airtableId}`);
+                                
+                                // Mark all fields as updated
+                                line.airtableUpdated = true;
+                                line.airtableDurationUpdated = true;
+                                line.airtableTypeUpdated = true;
+                                line.airtableCurrentTimeUpdated = true;
+                                
+                                return true;
+                            } catch (error) {
+                                console.error(`Error updating line ${index} in Airtable:`, error);
+                                return false;
+                            }
+                        });
+                        
+                        // Wait for all save operations to complete with a timeout
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Bulk save timeout')), 10000);
+                        });
+                        
+                        await Promise.race([
+                            Promise.allSettled(savePromises),
+                            timeoutPromise
+                        ]);
+                        
+                        console.log("All changes saved to Airtable (or attempted to save)");
+                        hasUnsavedChanges.value = false;
+                    } catch (error) {
+                        console.error("Error during bulk save to Airtable:", error);
+                        // Don't update the hasUnsavedChanges flag to allow trying again later
+                    } finally {
+                        // Restore previous loading state after a short delay
+                        setTimeout(() => {
+                            isLoading.value = tempIsLoading;
+                        }, 500);
+                    }
+                };
+
+                // Flag changes when modifying content
+                const onContentChange = async (index) => {
+                    if (index >= 0 && index < scriptLines.value.length) {
+                        const line = scriptLines.value[index];
+                        line.airtableUpdated = false;
+                        hasUnsavedChanges.value = true;
+
+                        // If the line has an Airtable ID, update it immediately
+                        if (line.airtableId) {
+                            try {
+                                const baseId = 'appdAaS1hPh5nHRxS';
+                                const tableId = 'tbliRcyIlg0feNW3J';
+                                const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                                
+                                // Create a timeout promise
+                                const timeoutPromise = new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('Request timeout')), 5000);
+                                });
+                                
+                                // Make the API request
+                                const fetchPromise = fetch(url, {
+                                    method: 'PATCH',
+                                    headers: {
+                                        'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143',
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: JSON.stringify({
+                                        fields: {
+                                            'fldfqskGJlUlyN3y4': line.content // "Entrega" field ID
+                                        }
+                                    })
+                                });
+                                
+                                // Race the fetch against a timeout
+                                const response = await Promise.race([fetchPromise, timeoutPromise]);
+                                
+                                if (!response.ok) {
+                                    const errorText = await response.text();
+                                    console.error(`Airtable error response: ${errorText}`);
+                                    throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                                }
+                                
+                                const data = await response.json();
+                                console.log('Updated Airtable content:', data);
+                                
+                                line.airtableUpdated = true;
+                                hasUnsavedChanges.value = false;
+                            } catch (error) {
+                                console.error('Error updating content in Airtable:', error);
+                                hasUnsavedChanges.value = true;
+                            }
+                        }
+                    }
+                };
+
+                // Flag duration changes
+                const onDurationChange = async (index) => {
+                    if (index >= 0 && index < scriptLines.value.length) {
+                        const line = scriptLines.value[index];
+                        line.airtableDurationUpdated = false;
+                        hasUnsavedChanges.value = true;
+
+                        // If the line has an Airtable ID, update it immediately
+                        if (line.airtableId) {
+                            try {
+                                const baseId = 'appdAaS1hPh5nHRxS';
+                                const tableId = 'tbliRcyIlg0feNW3J';
+                                const url = `https://api.airtable.com/v0/${baseId}/${tableId}/${line.airtableId}`;
+                                
+                                // Convert MM:SS format to seconds for Airtable
+                                const durationParts = line.duration.split(':');
+                                let durationInSeconds = 0;
+                                
+                                if (durationParts.length === 2) {
+                                    const minutes = parseInt(durationParts[0]) || 0;
+                                    const seconds = parseInt(durationParts[1]) || 0;
+                                    durationInSeconds = minutes * 60 + seconds;
+                                }
+                                
+                                console.log(`Converting duration ${line.duration} to ${durationInSeconds} seconds for Airtable`);
+                                
+                                // Create a timeout promise
+                                const timeoutPromise = new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('Request timeout')), 5000);
+                                });
+                                
+                                // Make the API request
+                                const fetchPromise = fetch(url, {
+                                    method: 'PATCH',
+                                    headers: {
+                                        'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143',
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: JSON.stringify({
+                                        fields: {
+                                            'fldHXLEnnwgTtIEkY': durationInSeconds
+                                        }
+                                    })
+                                });
+                                
+                                // Race the fetch against a timeout
+                                const response = await Promise.race([fetchPromise, timeoutPromise]);
+                                
+                                if (!response.ok) {
+                                    const errorText = await response.text();
+                                    console.error(`Airtable error response: ${errorText}`);
+                                    throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                                }
+                                
+                                const data = await response.json();
+                                console.log('Updated Airtable duration:', data);
+                                
+                                line.airtableDurationUpdated = true;
+                                hasUnsavedChanges.value = false;
+                            } catch (error) {
+                                console.error('Error updating duration in Airtable:', error);
+                                hasUnsavedChanges.value = true;
+                            }
+                        }
+
+                        // Recalculate times regardless of Airtable update success
+                        recalculateTimes();
+                    }
+                };
+
+                // Define getSelectedMatchTitle as a proper function
+                const getSelectedMatchTitle = () => {
+                    if (!selectedMatriz.value || !matrizes.value.length) return 'Select a Match';
+                    const selectedRecord = matrizes.value.find(m => m.id === selectedMatriz.value);
+                    if (!selectedRecord || !selectedRecord.fields) return 'No Match Selected'; 
+                    // Try to get the MatchID field value using both possible field names 
+                    console.log("Selected record fields:", selectedRecord.fields);
+                    // Look for the field with ID fldlG70v4UpwALCav or named MatchID
+                    const matchTitle = selectedRecord.fields.MatchID || 
+                                    selectedRecord.fields.fldlG70v4UpwALCav || 
+                                    selectedRecord.fields['Match ID'];
+                    console.log("Match title found:", matchTitle);
+                    
+                    return matchTitle || 'No Match ID Found';
+                };
+
+                // Function to insert a new line after the selected line
+                const insertLineAfterSelected = async () => {
+                    console.log("Inserting new line after selected line");
+                    const selectedIndex = scriptLines.value.findIndex(line => line.selected);
+                    
+                    if (selectedIndex === -1) {
+                        console.log("No line selected, using default add");
+                        addScriptLine();
+                        return;
+                    }
+                    
+                    // Get the selected line to copy its moment
+                    const selectedLine = scriptLines.value[selectedIndex];
+                    const moment = selectedLine.moment || '';
+                    
+                    // Get the current matriz ID (evento)
+                    const matriz = selectedMatriz.value;
+                    console.log(`Creating new line with moment: "${moment}" for matriz: "${matriz}"`);
+                    
+                    // Show loading indicator
+                    isLoading.value = true;
+                    
+                    try {
+                        // Create a new record in Airtable
+                        const newRecord = await createAirtableRecord(moment, matriz);
+                        
+                        if (newRecord && newRecord.id) {
+                            // Create a new line in the script with the Airtable ID
+                            const newLine = {
+                                content: '',
+                                duration: '00:00',
+                                type: '',
+                                calculatedTime: '',
+                                currentTime: '00:00:00',
+                                airtableId: newRecord.id,
+                                airtableUpdated: true,
+                                airtableDurationUpdated: true,
+                                airtableTypeUpdated: true,
+                                selected: false,
+                                moment: moment
+                            };
+                            
+                            // Insert the new line after the selected line
+                            scriptLines.value.splice(selectedIndex + 1, 0, newLine);
+                            
+                            // Recalculate times
+                            recalculateTimes();
+                            
+                            console.log(`New line added after line ${selectedIndex + 1} with Airtable ID ${newRecord.id}`);
+                        } else {
+                            throw new Error("Failed to create Airtable record");
+                        }
+                    } catch (error) {
+                        console.error("Error creating new line:", error);
+                        // Still add a local line in case of error
+                        const newLine = {
+                            content: '',
+                            duration: '00:00',
+                            type: '',
+                            calculatedTime: '',
+                            currentTime: '00:00:00',
+                            selected: false,
+                            moment: moment
+                        };
+                        scriptLines.value.splice(selectedIndex + 1, 0, newLine);
+                        recalculateTimes();
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+                
+                // Function to create a new record in Airtable
+                const createAirtableRecord = async (moment, matriz) => {
+                    try {
+                        console.log(`Creating Airtable record with moment: "${moment}", matriz: "${matriz}"`);
+                        
+                        // Define the base ID and table ID for Espelho items
+                        const baseId = 'appdAaS1hPh5nHRxS';
+                        const tableId = 'tbliRcyIlg0feNW3J';
+                        const url = `https://api.airtable.com/v0/${baseId}/${tableId}`;
+                        
+                        // Create a timeout promise
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Request timeout')), 10000);
+                        });
+                        
+                        // Create the fields to update
+                        const fields = {
+                            // Moment field (with fallback to empty string)
+                            'fldniXeuy8hlTgN5Y': moment || '',
+                            
+                            // Event field (ID do campo "Evento") - matriz ID
+                            'fldhIzs7bzWhbaIph': [matriz] || []  // Airtable expects an array for linked records
+                        };
+                        
+                        console.log("Sending to Airtable:", fields);
+                        
+                        // Make the API request
+                        const fetchPromise = fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': 'Bearer pat4aD3nmG3oQ2DU8.078d436b918f9e19e64ff7d332502528d7734dd81d291318ef1be5833cab2143',
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                fields: fields
+                            })
+                        });
+                        
+                        // Race the fetch against a timeout
+                        const response = await Promise.race([fetchPromise, timeoutPromise])
+                            .catch(error => {
+                                console.error('Network error creating Airtable record:', error);
+                                throw error;
+                            });
+                        
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`Airtable error response: ${errorText}`);
+                            throw new Error(`Airtable API error: ${response.status}, ${errorText}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log('Created new Airtable record:', data);
+                        
+                        return data;
+                    } catch (error) {
+                        console.error('Error creating Airtable record:', error);
+                        throw error; // Propagate the error to handle it in insertLineAfterSelected
+                    }
+                };
+                
+                const handleDragStart = (event, index) => {
+                    // Only allow dragging if the line is selected
+                    if (!scriptLines.value[index].selected) {
+                        event.preventDefault();
+                        return false;
+                    }
+                    
+                    // Store the index of the line being dragged
+                    event.dataTransfer.setData('text/plain', index);
+                    event.dataTransfer.effectAllowed = 'move';
+                    
+                    // Add a class to highlight the dragged element
+                    setTimeout(() => {
+                        event.target.closest('tr').classList.add('dragging');
+                    }, 0);
+                };
+                
+                const handleDragEnter = (event, index) => {
+                    // Add a class to show where the drop will occur
+                    event.target.closest('tr').classList.add('drop-target');
+                };
+                
+                const handleDragLeave = (event) => {
+                    // Remove the drop target highlight
+                    event.target.closest('tr')?.classList.remove('drop-target');
+                };
+                
+                const handleDrop = (event, targetIndex) => {
+                    event.preventDefault();
+                    
+                    // Get the source index from dataTransfer
+                    const sourceIndex = parseInt(event.dataTransfer.getData('text/plain'));
+                    
+                    // Remove highlighting
+                    document.querySelectorAll('tr.dragging').forEach(el => el.classList.remove('dragging'));
+                    document.querySelectorAll('tr.drop-target').forEach(el => el.classList.remove('drop-target'));
+                    
+                    // Don't do anything if dropping onto the same element
+                    if (sourceIndex === targetIndex) return;
+                    
+                    // Move the line to the new position
+                    const temp = scriptLines.value[sourceIndex];
+                    
+                    // If moving down, remove from original position first, then insert
+                    if (sourceIndex < targetIndex) {
+                        scriptLines.value.splice(sourceIndex, 1);
+                        scriptLines.value.splice(targetIndex - 1, 0, temp);
+                    } else {
+                        // If moving up, insert at new position, then remove from original
+                        scriptLines.value.splice(targetIndex, 0, temp);
+                        scriptLines.value.splice(sourceIndex + 1, 1);
+                    }
+                    
+                    // Recalculate times after reordering
+                    recalculateTimes();
+                };
+
+                const handleDragEnd = () => {
+                    // Clean up any lingering class styles
+                    document.querySelectorAll('tr.dragging').forEach(el => el.classList.remove('dragging'));
+                    document.querySelectorAll('tr.drop-target').forEach(el => el.classList.remove('drop-target'));
+                };
+
+                // Store a mapping of group totals for total duration
+                const groupTotalDurations = ref({});
+                
+                // Get or set group total duration
+                const getGroupTotalDuration = (groupName) => {
+                    const safeGroupName = groupName || 'Ungrouped';
+                    return groupTotalDurations.value[safeGroupName] || '00:00:00';
+                };
+                
+                // Update the total duration for a specific group
+                const updateGroupTotalDuration = (groupName, newValue) => {
+                    const safeGroupName = groupName || 'Ungrouped';
+                    groupTotalDurations.value[safeGroupName] = newValue;
+                    // Force Vue to recognize the change
+                    groupTotalDurations.value = {...groupTotalDurations.value};
+                };
+                
+                // Calculate the total duration of all lines in a group
+                const calculateGroupDuration = (groupName) => {
+                    const safeGroupName = groupName || 'Ungrouped';
+                    let totalSeconds = 0;
+                    
+                    // Sum up durations for all lines in this group
+                    scriptLines.value.forEach(line => {
+                        if ((line.moment || 'Ungrouped') === safeGroupName) {
+                            const durationParts = line.duration ? line.duration.split(':').map(Number) : [0, 0];
+                            if (durationParts.length === 2) {
+                                const minutes = durationParts[0] || 0;
+                                const seconds = durationParts[1] || 0;
+                                totalSeconds += minutes * 60 + seconds;
+                            }
+                        }
+                    });
+                    
+                    // Convert seconds to HH:MM:SS
+                    const hours = Math.floor(totalSeconds / 3600);
+                    const minutes = Math.floor((totalSeconds % 3600) / 60);
+                    const seconds = totalSeconds % 60;
+                    
+                    return formatTimeWithHours(hours, minutes, seconds);
+                };
+                
+                // Calculate the overflow for a specific group (difference between total and calculated)
+                const calculateGroupOverflow = (groupName) => {
+                    const safeGroupName = groupName || 'Ungrouped';
+                    
+                    // Get the total duration set by the user
+                    const totalDurationStr = getGroupTotalDuration(safeGroupName);
+                    const totalParts = totalDurationStr.split(':').map(Number);
+                    const totalSeconds = (totalParts[0] || 0) * 3600 + (totalParts[1] || 0) * 60 + (totalParts[2] || 0);
+                    
+                    // Get the calculated duration from all lines
+                    const calculatedDurationStr = calculateGroupDuration(safeGroupName);
+                    const calculatedParts = calculatedDurationStr.split(':').map(Number);
+                    const calculatedSeconds = (calculatedParts[0] || 0) * 3600 + (calculatedParts[1] || 0) * 60 + (calculatedParts[2] || 0);
+                    
+                    // Calculate difference
+                    const diffSeconds = totalSeconds - calculatedSeconds;
+                    const absSeconds = Math.abs(diffSeconds);
+                    
+                    // Format with sign
+                    const sign = diffSeconds >= 0 ? '+' : '-';
+                    return sign + formatTimeWithHours(
+                        Math.floor(absSeconds / 3600),
+                        Math.floor((absSeconds % 3600) / 60),
+                        absSeconds % 60
+                    );
+                };
+                
+                // Check if a group's overflow is negative
+                const isGroupOverflowNegative = (groupName) => {
+                    const safeGroupName = groupName || 'Ungrouped';
+                    
+                    // Get the overflow string which has a sign at the beginning
+                    const overflow = calculateGroupOverflow(safeGroupName);
+                    // Return true if it starts with minus sign
+                    return overflow.startsWith('-');
+                };
+
+                // Listen for Enter key to move to next line
+                const handleKeyDown = (event) => {
+                    if (event.key === 'Enter' && isRunning.value) {
+                        event.preventDefault(); // Prevent default Enter behavior
+                        
+                        console.log(`[TECLA ENTER] Detectada tecla Enter com isRunning=${isRunning.value}, currentLineIndex=${currentLineIndex.value}`);
+                        
+                        // Check if Shift key is pressed for moving back
+                        if (event.shiftKey) {
+                            // Move back to previous line
+                            if (currentLineIndex.value > 0) {
+                                // Antes de voltar, resetamos o tempo da linha atual
+                                const currentLine = scriptLines.value[currentLineIndex.value];
+                                if (currentLine) {
+                                    // Ajustar o overflow com o tempo que não foi usado nesta linha
+                                    const durationParts = currentLine.duration.split(':').map(Number);
+                                    const plannedSeconds = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
+                                    
+                                    // Se estamos voltando, adicione todo o tempo planejado, pois não o usamos
+                                    calculateOverflowAdjustment(plannedSeconds);
+                                }
+                                
+                                // Reset the current time for the current line
+                                if (scriptLines.value[currentLineIndex.value]) {
+                                    scriptLines.value[currentLineIndex.value].currentTime = '00:00:00';
+                                }
+                                
+                                currentLineIndex.value--;
+                                // Reset line timer for the previous line
+                                window.lineSeconds = 0; 
+                                currentLineRuntime.value = '00:00:00';
+                                
+                                // Reset the current time for the new line
+                                if (scriptLines.value[currentLineIndex.value]) {
+                                    scriptLines.value[currentLineIndex.value].currentTime = '00:00:00';
+                                }
+                            }
+                        } else {
+                            // Salvar o tempo atual antes de mover para a próxima linha
+                            if (currentLineIndex.value >= 0 && scriptLines.value[currentLineIndex.value]) {
+                                const currentLine = scriptLines.value[currentLineIndex.value];
+                                
+                                // Calculate the current time (time spent on this line)
+                                const currentTimeValue = formatTimeWithHours(
+                                    Math.floor(window.lineSeconds / 3600), 
+                                    Math.floor((window.lineSeconds % 3600) / 60), 
+                                    window.lineSeconds % 60
+                                );
+                                
+                                console.log(`[TECLA ENTER] Registrando tempo para linha ${currentLineIndex.value}: ${currentTimeValue}`);
+                                
+                                // Store in the line object
+                                currentLine.currentTime = currentTimeValue;
+                                
+                                // Check if we have a valid Airtable ID
+                                if (currentLine.airtableId && !currentLine.airtableCurrentTimeUpdating) {
+                                    console.log(`[TEMPO ENTREGUE] Linha tem airtableId: ${currentLine.airtableId}, enviando...`);
+                                    
+                                    // Marcar que estamos atualizando para evitar duplicação
+                                    currentLine.airtableCurrentTimeUpdating = true;
+                                    
+                                    // Pequeno delay para garantir que a atualização do Airtable não bloqueie a UI
+                                    setTimeout(() => {
+                                        updateAirtableCurrentTime(currentLineIndex.value, currentTimeValue)
+                                            .then(result => {
+                                                console.log(`[TEMPO ENTREGUE] Resultado da atualização:`, result);
+                                                currentLine.airtableCurrentTimeUpdated = true;
+                                                currentLine.airtableCurrentTimeUpdating = false;
+                                            })
+                                            .catch(error => {
+                                                console.error(`[TEMPO ENTREGUE] Erro na atualização:`, error);
+                                                currentLine.airtableCurrentTimeUpdating = false;
+                                            });
+                                    }, 100);
+                                } else {
+                                    console.warn(`[TEMPO ENTREGUE] Linha ${currentLineIndex.value} não tem airtableId ou já está sendo atualizada, não é possível atualizar o Tempo Entregue`);
+                                }
+                            }
+                            
+                            // Não chamamos mais o moveToNextLine() aqui, pois ele será chamado pelo broadcastKeyHandler
+                            // que é o handler que recebe o evento Enter quando o broadcast está ativo
+                        }
+                    }
+                };
+
+                return {
+                    scriptEditor,
+                    scriptContent,
+                    startTime,
+                    totalDuration,
+                    calculatedTotalDuration,
+                    overflowTime,
+                    isOverflowPositive,
+                    scriptLines,
+                    addScriptLine,
+                    removeScriptLine,
+                    recalculateTimes,
+                    formatTime,
+                    generateScript,
+                    saveScript,
+                    showLineDetails,
+                    currentLine,
+                    showDeleteConfirm,
+                    confirmDeleteLine,
+                    deleteConfirmed,
+                    openLineDetails,
+                    shouldShowGroupHeader,
+                    startBroadcast,
+                    isRunning,
+                    currentLineIndex,
+                    showBroadcastConfirm,
+                    confirmBroadcast,
+                    moveToNextLine,
+                    showRuntime,
+                    calculateOverflowAdjustment,
+                    currentLineRuntime,
+                    isCurrentLineOvertime,
+                    stopBroadcast,
+                    isLineOvertime,
+                    moveLineUp,
+                    moveLineDown,
+                    moveSelectedLinesUp,
+                    moveSelectedLinesDown,
+                    matrizes,
+                    selectedMatriz,
+                    isLoading,
+                    momentOptions,
+                    loadMomentOptions,
+                    updateMoment,
+                    ensureConsistentGrouping,
+                    sortScriptLinesByMoment,
+                    getUniqueMoments,
+                    typeOptions,
+                    getTypeColor,
+                    getTextColor,
+                    getContrastColor,
+                    updateAirtableType,
+                    convertAirtableColorToCSS,
+                    getSelectedMatchTitle,
+                    horarioSemData,
+                    updateAirtableContent,
+                    onContentChange,
+                    updateAirtableDuration,
+                    onDurationChange,
+                    handleMatrizChange,
+                    hasUnsavedChanges,
+                    saveAllChangesToAirtable,
+                    insertLineAfterSelected,
+                    createAirtableRecord,
+                    updateAirtableCurrentTime,
+                    handleDragStart,
+                    handleDrop,
+                    handleDragEnter,
+                    handleDragLeave,
+                    handleDragEnd,
+                    emergencyReset,
+                    handleKeyDown, // Add handleKeyDown to the return object
+                    formatTimeWithHours, // Add formatTimeWithHours as it's needed by handleKeyDown
+                    getGroupTotalDuration,
+                    updateGroupTotalDuration,
+                    calculateGroupDuration,
+                    calculateGroupOverflow,
+                    isGroupOverflowNegative,
+                    getCurrentGroupName,
+                    currentGroupRemainingTime,
+                    isCurrentGroupOvertime
+                };
+                
+            }
+        }).mount('#app');
+
+        // Remove the problematic global event listener that's causing the app to break
+        /* 
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && isRunning.value) {
+                console.log('[EVENTO GLOBAL] Tecla Enter detectada no evento global');
+                handleKeyDown(event);
+            }
+        });
+        */
+    </script>
+</body>
+</html>
